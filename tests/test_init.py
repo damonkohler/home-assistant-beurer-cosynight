@@ -5,25 +5,20 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import requests
 
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from custom_components.beurer_cosynight import (
     PLATFORMS,
-    _create_and_authenticate,
     async_setup_entry,
     async_unload_entry,
 )
 from custom_components.beurer_cosynight.beurer_cosynight import (
-    BeurerCosyNight,
-    Device,
+    ApiError,
+    AuthError,
 )
-from custom_components.beurer_cosynight.const import DOMAIN
 
 from .conftest import (
-    MOCK_DEVICE_ID,
-    MOCK_DEVICE_NAME,
     MOCK_ENTRY_ID,
     MOCK_PASSWORD,
     MOCK_USERNAME,
@@ -39,130 +34,131 @@ def mock_entry():
     return entry
 
 
-class TestCreateAndAuthenticate:
-    """Test the _create_and_authenticate helper."""
-
-    def test_creates_hub_authenticates_and_lists_devices(self, tmp_path):
-        """Should create hub, authenticate, and list devices."""
-        with patch(
-            "custom_components.beurer_cosynight.BeurerCosyNight"
-        ) as MockHub:
-            mock_hub = MockHub.return_value
-            mock_hub.list_devices.return_value = [
-                Device(active=True, id="d1", name="Pad", requiresUpdate=False)
-            ]
-
-            hub, devices = _create_and_authenticate(
-                str(tmp_path / "token"), MOCK_USERNAME, MOCK_PASSWORD
-            )
-
-        MockHub.assert_called_once_with(
-            token_path=str(tmp_path / "token"),
-            username=MOCK_USERNAME,
-            password=MOCK_PASSWORD,
-        )
-        mock_hub.authenticate.assert_called_once_with(MOCK_USERNAME, MOCK_PASSWORD)
-        mock_hub.list_devices.assert_called_once()
-        assert len(devices) == 1
-
-    def test_propagates_http_error(self, tmp_path):
-        """HTTP errors should propagate for async_setup_entry to handle."""
-        with patch(
-            "custom_components.beurer_cosynight.BeurerCosyNight"
-        ) as MockHub:
-            MockHub.return_value.authenticate.side_effect = requests.HTTPError(
-                response=MagicMock(status_code=401)
-            )
-            with pytest.raises(requests.HTTPError):
-                _create_and_authenticate(
-                    str(tmp_path / "token"), MOCK_USERNAME, MOCK_PASSWORD
-                )
-
-    def test_propagates_connection_error(self, tmp_path):
-        """Connection errors should propagate."""
-        with patch(
-            "custom_components.beurer_cosynight.BeurerCosyNight"
-        ) as MockHub:
-            MockHub.return_value.authenticate.side_effect = (
-                requests.ConnectionError("no network")
-            )
-            with pytest.raises(requests.ConnectionError):
-                _create_and_authenticate(
-                    str(tmp_path / "token"), MOCK_USERNAME, MOCK_PASSWORD
-                )
+@pytest.fixture(autouse=True)
+def _patch_session():
+    """Patch async_get_clientsession to avoid HA network stack in tests."""
+    with patch(
+        "custom_components.beurer_cosynight.async_get_clientsession",
+        return_value=MagicMock(),
+    ):
+        yield
 
 
 class TestAsyncSetupEntry:
-    """Test async_setup_entry error handling."""
+    """Test async_setup_entry with async hub."""
 
     @pytest.mark.asyncio
-    async def test_auth_failure_raises_config_entry_auth_failed(
+    async def test_auth_error_raises_config_entry_auth_failed(
         self, mock_hass, mock_entry
     ):
-        """401/403 from API should raise ConfigEntryAuthFailed."""
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-
-        with patch(
-            "custom_components.beurer_cosynight._create_and_authenticate",
-            side_effect=requests.HTTPError(response=mock_response),
-        ):
+        """AuthError from hub should raise ConfigEntryAuthFailed."""
+        with patch("custom_components.beurer_cosynight.BeurerCosyNight") as MockHub:
+            MockHub.return_value.authenticate = AsyncMock(
+                side_effect=AuthError("Invalid credentials")
+            )
             with pytest.raises(ConfigEntryAuthFailed):
                 await async_setup_entry(mock_hass, mock_entry)
 
     @pytest.mark.asyncio
-    async def test_403_raises_config_entry_auth_failed(
-        self, mock_hass, mock_entry
-    ):
-        """403 from API should also raise ConfigEntryAuthFailed."""
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-
-        with patch(
-            "custom_components.beurer_cosynight._create_and_authenticate",
-            side_effect=requests.HTTPError(response=mock_response),
-        ):
-            with pytest.raises(ConfigEntryAuthFailed):
-                await async_setup_entry(mock_hass, mock_entry)
-
-    @pytest.mark.asyncio
-    async def test_network_error_raises_config_entry_not_ready(
-        self, mock_hass, mock_entry
-    ):
-        """Network errors should raise ConfigEntryNotReady."""
-        with patch(
-            "custom_components.beurer_cosynight._create_and_authenticate",
-            side_effect=requests.ConnectionError("no network"),
-        ):
+    async def test_api_error_raises_config_entry_not_ready(self, mock_hass, mock_entry):
+        """ApiError from hub should raise ConfigEntryNotReady."""
+        with patch("custom_components.beurer_cosynight.BeurerCosyNight") as MockHub:
+            MockHub.return_value.authenticate = AsyncMock(
+                side_effect=ApiError("Connection failed")
+            )
             with pytest.raises(ConfigEntryNotReady):
                 await async_setup_entry(mock_hass, mock_entry)
 
     @pytest.mark.asyncio
-    async def test_timeout_raises_config_entry_not_ready(
-        self, mock_hass, mock_entry
-    ):
-        """Timeout should raise ConfigEntryNotReady."""
-        with patch(
-            "custom_components.beurer_cosynight._create_and_authenticate",
-            side_effect=requests.Timeout("timed out"),
+    async def test_successful_setup(self, mock_hass, mock_entry, mock_hub_async):
+        """Successful setup should store hub, devices, and coordinators."""
+        with (
+            patch(
+                "custom_components.beurer_cosynight.BeurerCosyNight",
+                return_value=mock_hub_async,
+            ),
+            patch(
+                "custom_components.beurer_cosynight.BeurerCosyNightCoordinator"
+            ) as MockCoord,
         ):
-            with pytest.raises(ConfigEntryNotReady):
-                await async_setup_entry(mock_hass, mock_entry)
+            coord_instance = AsyncMock()
+            MockCoord.return_value = coord_instance
+            result = await async_setup_entry(mock_hass, mock_entry)
+
+        assert result is True
+        mock_hub_async.authenticate.assert_awaited_once()
+        mock_hub_async.list_devices.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_500_raises_config_entry_not_ready(
-        self, mock_hass, mock_entry
+    async def test_no_executor_job_for_authenticate(
+        self, mock_hass, mock_entry, mock_hub_async
     ):
-        """Non-auth HTTP error (500) should raise ConfigEntryNotReady."""
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-
-        with patch(
-            "custom_components.beurer_cosynight._create_and_authenticate",
-            side_effect=requests.HTTPError(response=mock_response),
+        """Setup should await hub.authenticate directly, not via executor."""
+        with (
+            patch(
+                "custom_components.beurer_cosynight.BeurerCosyNight",
+                return_value=mock_hub_async,
+            ),
+            patch(
+                "custom_components.beurer_cosynight.BeurerCosyNightCoordinator"
+            ) as MockCoord,
         ):
-            with pytest.raises(ConfigEntryNotReady):
-                await async_setup_entry(mock_hass, mock_entry)
+            MockCoord.return_value = AsyncMock()
+            await async_setup_entry(mock_hass, mock_entry)
+
+        mock_hub_async.authenticate.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_executor_job_for_list_devices(
+        self, mock_hass, mock_entry, mock_hub_async
+    ):
+        """Setup should await hub.list_devices directly."""
+        with (
+            patch(
+                "custom_components.beurer_cosynight.BeurerCosyNight",
+                return_value=mock_hub_async,
+            ),
+            patch(
+                "custom_components.beurer_cosynight.BeurerCosyNightCoordinator"
+            ) as MockCoord,
+        ):
+            MockCoord.return_value = AsyncMock()
+            await async_setup_entry(mock_hass, mock_entry)
+
+        mock_hub_async.list_devices.assert_awaited_once()
+
+
+class TestAsyncUnloadEntry:
+    """Test async_unload_entry."""
+
+    @pytest.mark.asyncio
+    async def test_unload_removes_data(self, mock_hass):
+        """Successful unload should remove entry data from hass.data."""
+        from custom_components.beurer_cosynight.const import DOMAIN
+
+        mock_entry = MagicMock()
+        mock_entry.entry_id = "test_entry"
+        mock_hass.data = {DOMAIN: {"test_entry": {"hub": MagicMock()}}}
+
+        result = await async_unload_entry(mock_hass, mock_entry)
+
+        assert result is True
+        assert "test_entry" not in mock_hass.data[DOMAIN]
+
+    @pytest.mark.asyncio
+    async def test_unload_failure_keeps_data(self, mock_hass):
+        """Failed unload should keep entry data."""
+        from custom_components.beurer_cosynight.const import DOMAIN
+
+        mock_entry = MagicMock()
+        mock_entry.entry_id = "test_entry"
+        mock_hass.data = {DOMAIN: {"test_entry": {"hub": MagicMock()}}}
+        mock_hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
+
+        result = await async_unload_entry(mock_hass, mock_entry)
+
+        assert result is False
+        assert "test_entry" in mock_hass.data[DOMAIN]
 
 
 class TestPlatforms:

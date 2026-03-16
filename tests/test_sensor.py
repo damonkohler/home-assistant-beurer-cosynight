@@ -21,14 +21,22 @@ from .conftest import MOCK_DEVICE_ID, MOCK_DEVICE_NAME
 
 @pytest.fixture
 def device():
-    return Device(active=True, id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False)
+    return Device(
+        active=True, id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False
+    )
 
 
 @pytest.fixture
 def status():
     return Status(
-        active=True, bodySetting=3, feetSetting=5, heartbeat=100,
-        id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False, timer=1800,
+        active=True,
+        bodySetting=3,
+        feetSetting=5,
+        heartbeat=100,
+        id=MOCK_DEVICE_ID,
+        name=MOCK_DEVICE_NAME,
+        requiresUpdate=False,
+        timer=1800,
     )
 
 
@@ -54,8 +62,14 @@ class TestDeviceTimerSensor:
     def test_native_value_zero_when_off(self, sensor, coordinator):
         """native_value should be 0 when device timer is 0."""
         coordinator.data = Status(
-            active=False, bodySetting=0, feetSetting=0, heartbeat=0,
-            id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False, timer=0,
+            active=False,
+            bodySetting=0,
+            feetSetting=0,
+            heartbeat=0,
+            id=MOCK_DEVICE_ID,
+            name=MOCK_DEVICE_NAME,
+            requiresUpdate=False,
+            timer=0,
         )
         assert sensor.native_value == 0
 
@@ -90,8 +104,14 @@ class TestDeviceTimerSensor:
     def test_native_value_changes_with_coordinator_data(self, sensor, coordinator):
         """Sensor should reflect updated coordinator data."""
         coordinator.data = Status(
-            active=True, bodySetting=3, feetSetting=5, heartbeat=100,
-            id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False, timer=900,
+            active=True,
+            bodySetting=3,
+            feetSetting=5,
+            heartbeat=100,
+            id=MOCK_DEVICE_ID,
+            name=MOCK_DEVICE_NAME,
+            requiresUpdate=False,
+            timer=900,
         )
         assert sensor.native_value == 900
 

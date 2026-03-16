@@ -81,7 +81,7 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
             id=self._device.id,
             timespan=self._timer.timespan_seconds,
         )
-        await self.hass.async_add_executor_job(self.coordinator.hub.quickstart, qs)
+        await self.coordinator.hub.quickstart(qs)
         await self.coordinator.async_request_refresh()
 
 

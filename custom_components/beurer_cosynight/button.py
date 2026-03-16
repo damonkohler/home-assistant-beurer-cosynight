@@ -57,5 +57,5 @@ class StopButton(CoordinatorEntity[BeurerCosyNightCoordinator], ButtonEntity):
             id=self._device.id,
             timespan=0,
         )
-        await self.hass.async_add_executor_job(self.coordinator.hub.quickstart, qs)
+        await self.coordinator.hub.quickstart(qs)
         await self.coordinator.async_request_refresh()

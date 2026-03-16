@@ -6,9 +6,10 @@ import logging
 from datetime import timedelta
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .beurer_cosynight import BeurerCosyNight, Status
+from .beurer_cosynight import AuthError, ApiError, BeurerCosyNight, Status
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,8 +38,8 @@ class BeurerCosyNightCoordinator(DataUpdateCoordinator[Status]):
     async def _async_update_data(self) -> Status:
         """Fetch device status from API."""
         try:
-            return await self.hass.async_add_executor_job(
-                self.hub.get_status, self.device_id
-            )
-        except Exception as err:
+            return await self.hub.get_status(self.device_id)
+        except AuthError as err:
+            raise ConfigEntryAuthFailed("Authentication failed during polling") from err
+        except ApiError as err:
             raise UpdateFailed(f"Error communicating with API: {err}") from err

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
@@ -28,24 +28,32 @@ from .conftest import MOCK_DEVICE_ID, MOCK_DEVICE_NAME
 
 @pytest.fixture
 def device():
-    return Device(active=True, id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False)
+    return Device(
+        active=True, id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False
+    )
 
 
 @pytest.fixture
 def status():
     return Status(
-        active=True, bodySetting=3, feetSetting=5, heartbeat=100,
-        id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False, timer=1800,
+        active=True,
+        bodySetting=3,
+        feetSetting=5,
+        heartbeat=100,
+        id=MOCK_DEVICE_ID,
+        name=MOCK_DEVICE_NAME,
+        requiresUpdate=False,
+        timer=1800,
     )
 
 
 @pytest.fixture
-def coordinator(status, mock_hass):
-    """Return a mock coordinator with data."""
+def coordinator(status):
+    """Return a mock coordinator with async hub."""
     coord = MagicMock()
     coord.data = status
     coord.hub = MagicMock()
-    coord.hub.quickstart = MagicMock()
+    coord.hub.quickstart = AsyncMock()
     coord.async_request_refresh = AsyncMock()
     return coord
 
@@ -59,7 +67,6 @@ def timer(device):
 def body_zone(coordinator, device, timer):
     zone = BodyZone(coordinator, device, timer)
     zone.hass = MagicMock()
-    zone.hass.async_add_executor_job = AsyncMock()
     return zone
 
 
@@ -67,7 +74,6 @@ def body_zone(coordinator, device, timer):
 def feet_zone(coordinator, device, timer):
     zone = FeetZone(coordinator, device, timer)
     zone.hass = MagicMock()
-    zone.hass.async_add_executor_job = AsyncMock()
     return zone
 
 
@@ -89,13 +95,11 @@ class TestBodyZone:
 
     @pytest.mark.asyncio
     async def test_select_option_sends_quickstart(self, body_zone, coordinator):
-        """Selecting an option should send quickstart with correct body value."""
+        """Selecting an option should await hub.quickstart with correct body value."""
         await body_zone.async_select_option("7")
 
-        body_zone.hass.async_add_executor_job.assert_called_once()
-        call_args = body_zone.hass.async_add_executor_job.call_args
-        # First arg is the function (hub.quickstart), second is the Quickstart
-        qs = call_args[0][1]
+        coordinator.hub.quickstart.assert_awaited_once()
+        qs = coordinator.hub.quickstart.call_args[0][0]
         assert isinstance(qs, Quickstart)
         assert qs.bodySetting == 7
         assert qs.feetSetting == 5  # keeps current feet value
@@ -108,12 +112,14 @@ class TestBodyZone:
         coordinator.async_request_refresh.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_select_option_uses_timer_timespan(self, body_zone, timer):
+    async def test_select_option_uses_timer_timespan(
+        self, body_zone, timer, coordinator
+    ):
         """Quickstart should use the timer's current timespan."""
         timer._selected = "2 hours"
         await body_zone.async_select_option("5")
 
-        qs = body_zone.hass.async_add_executor_job.call_args[0][1]
+        qs = coordinator.hub.quickstart.call_args[0][0]
         assert qs.timespan == 7200  # 2 hours
 
     def test_unique_id(self, body_zone):
@@ -151,10 +157,10 @@ class TestFeetZone:
 
     @pytest.mark.asyncio
     async def test_select_option_sends_quickstart(self, feet_zone, coordinator):
-        """Selecting an option should send quickstart with correct feet value."""
+        """Selecting an option should await hub.quickstart with correct feet value."""
         await feet_zone.async_select_option("8")
 
-        qs = feet_zone.hass.async_add_executor_job.call_args[0][1]
+        qs = coordinator.hub.quickstart.call_args[0][0]
         assert qs.feetSetting == 8
         assert qs.bodySetting == 3  # keeps current body value
         assert qs.id == MOCK_DEVICE_ID
@@ -166,12 +172,14 @@ class TestFeetZone:
         coordinator.async_request_refresh.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_select_option_no_data_uses_zero_for_body(self, feet_zone, coordinator):
+    async def test_select_option_no_data_uses_zero_for_body(
+        self, feet_zone, coordinator
+    ):
         """When coordinator data is None, body should default to 0."""
         coordinator.data = None
         await feet_zone.async_select_option("4")
 
-        qs = feet_zone.hass.async_add_executor_job.call_args[0][1]
+        qs = coordinator.hub.quickstart.call_args[0][0]
         assert qs.bodySetting == 0
         assert qs.feetSetting == 4
 
@@ -251,7 +259,9 @@ class TestAsyncSetupEntry:
         entry.entry_id = "entry1"
 
         added_entities = []
-        async_add_entities = MagicMock(side_effect=lambda entities: added_entities.extend(entities))
+        async_add_entities = MagicMock(
+            side_effect=lambda entities: added_entities.extend(entities)
+        )
 
         await async_setup_entry(mock_hass, entry, async_add_entities)
 

@@ -20,13 +20,15 @@ from .conftest import MOCK_DEVICE_ID, MOCK_DEVICE_NAME
 
 @pytest.fixture
 def device():
-    return Device(active=True, id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False)
+    return Device(
+        active=True, id=MOCK_DEVICE_ID, name=MOCK_DEVICE_NAME, requiresUpdate=False
+    )
 
 
 @pytest.fixture
 def hub():
     hub = MagicMock(spec=BeurerCosyNight)
-    hub.quickstart = MagicMock()
+    hub.quickstart = AsyncMock()
     return hub
 
 
@@ -42,7 +44,6 @@ def coordinator(hub):
 def button(coordinator, device):
     btn = StopButton(coordinator, device)
     btn.hass = MagicMock()
-    btn.hass.async_add_executor_job = AsyncMock()
     return btn
 
 
@@ -51,12 +52,11 @@ class TestStopButton:
 
     @pytest.mark.asyncio
     async def test_press_sends_quickstart_with_zeros(self, button, hub):
-        """Pressing stop should send quickstart with body=0, feet=0, timespan=0."""
+        """Pressing stop should await hub.quickstart with body=0, feet=0, timespan=0."""
         await button.async_press()
 
-        button.hass.async_add_executor_job.assert_called_once()
-        call_args = button.hass.async_add_executor_job.call_args
-        qs = call_args[0][1]
+        hub.quickstart.assert_awaited_once()
+        qs = hub.quickstart.call_args[0][0]
         assert isinstance(qs, Quickstart)
         assert qs.bodySetting == 0
         assert qs.feetSetting == 0

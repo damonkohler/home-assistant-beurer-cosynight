@@ -5,16 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import os
-
-import requests
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .beurer_cosynight import BeurerCosyNight
+from .beurer_cosynight import AiohttpClient, ApiError, AuthError, BeurerCosyNight
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,12 +23,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): str,
     }
 )
-
-
-def _test_credentials(username: str, password: str) -> None:
-    """Test credentials by authenticating (runs in executor)."""
-    hub = BeurerCosyNight(token_path=os.devnull)
-    hub.authenticate(username, password)
 
 
 class BeurerCosyNightConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -46,18 +38,15 @@ class BeurerCosyNightConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                await self.hass.async_add_executor_job(
-                    _test_credentials,
-                    user_input[CONF_USERNAME],
-                    user_input[CONF_PASSWORD],
+                session = async_get_clientsession(self.hass)
+                client = AiohttpClient(session)
+                hub = BeurerCosyNight(client, token_path="/dev/null")
+                await hub.authenticate(
+                    user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
                 )
-            except requests.HTTPError as err:
-                if err.response is not None and err.response.status_code in (401, 403):
-                    errors["base"] = "invalid_auth"
-                else:
-                    _LOGGER.exception("Failed to connect to Beurer CosyNight")
-                    errors["base"] = "cannot_connect"
-            except requests.RequestException:
+            except AuthError:
+                errors["base"] = "invalid_auth"
+            except ApiError:
                 _LOGGER.exception("Failed to connect to Beurer CosyNight")
                 errors["base"] = "cannot_connect"
             except Exception:
