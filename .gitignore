@@ -1,1 +1,20 @@
-*.pyc
+# Ignore everything
+*
+
+# Allow repo structure
+!.gitignore
+!LICENSE
+!README.md
+!hacs.json
+
+# Allow integration source
+!custom_components/
+!custom_components/beurer_cosynight/
+!custom_components/beurer_cosynight/*.py
+!custom_components/beurer_cosynight/*.json
+
+# Allow test infrastructure
+!tests/
+!tests/*.py
+!requirements-dev.txt
+!pyproject.toml

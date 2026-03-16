@@ -1,101 +1,148 @@
-"""Platform for select entity integration."""
+"""Select entities for Beurer CosyNight integration."""
+
 from __future__ import annotations
 
 import logging
 
-from . import beurer_cosynight
-import voluptuous as vol
-
-import homeassistant.helpers.config_validation as cv
-from homeassistant.components.select import (PLATFORM_SCHEMA, SelectEntity)
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.components.select import SelectEntity
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from . import beurer_cosynight
+from .const import DEFAULT_TIMER_LABEL, DOMAIN, TIMER_OPTIONS
+from .coordinator import BeurerCosyNightCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
-    vol.Required(CONF_USERNAME): cv.string,
-    vol.Required(CONF_PASSWORD): cv.string,
-})
 
-
-def setup_platform(
+async def async_setup_entry(
     hass: HomeAssistant,
-    config: ConfigType,
-    add_entities: AddEntitiesCallback,
-    discovery_info: DiscoveryInfoType | None = None
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    username = config[CONF_USERNAME]
-    password = config.get(CONF_PASSWORD)
-    hub = beurer_cosynight.BeurerCosyNight()
+    """Set up Beurer CosyNight select entities from a config entry."""
+    data = hass.data[DOMAIN][entry.entry_id]
+    devices: list[beurer_cosynight.Device] = data["devices"]
+    coordinators: dict[str, BeurerCosyNightCoordinator] = data["coordinators"]
 
-    try:
-        hub.authenticate(username, password)
-    except:
-        _LOGGER.error("Could not connect to AwesomeLight hub")
-        return
-
-    entities = []
-    for d in hub.list_devices():
-        entities.append(BodyZone(hub, d))
-        entities.append(FeetZone(hub, d))
-    add_entities(entities)
+    entities: list[SelectEntity] = []
+    for device in devices:
+        coordinator = coordinators[device.id]
+        timer = TimerSelect(device)
+        entities.append(BodyZone(coordinator, device, timer))
+        entities.append(FeetZone(coordinator, device, timer))
+        entities.append(timer)
+    async_add_entities(entities)
 
 
-class _Zone(SelectEntity):
+class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
+    """Base class for Beurer CosyNight zone controls."""
 
-    def __init__(self, hub, device, name) -> None:
-        self._hub = hub
+    _attr_has_entity_name = True
+    _attr_options = [str(x) for x in range(10)]
+
+    def __init__(
+        self,
+        coordinator: BeurerCosyNightCoordinator,
+        device: beurer_cosynight.Device,
+        timer: TimerSelect,
+        zone_type: str,
+    ) -> None:
+        super().__init__(coordinator)
         self._device = device
-        self._name = f'{device.name} {name}'
-        self._status = None
-        self.update()
+        self._timer = timer
+        self._attr_name = zone_type
+        self._attr_unique_id = (
+            f"beurer_cosynight_{device.id}_{zone_type.lower().replace(' ', '_')}"
+        )
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.id)},
+            name=device.name,
+            manufacturer="Beurer",
+            model="CosyNight",
+        )
 
     @property
-    def name(self) -> str:
-        return self._name
+    def current_option(self) -> str:
+        if self.coordinator.data is None:
+            return "0"
+        return str(self._get_setting())
 
-    @property
-    def options(self):
-        return [str(x) for x in range(0, 10)]
+    def _get_setting(self) -> int:
+        raise NotImplementedError
 
-    def update(self) -> None:
-        self._status = self._hub.get_status(self._device.id)
+    async def _async_quickstart(self, body: int, feet: int) -> None:
+        qs = beurer_cosynight.Quickstart(
+            bodySetting=body,
+            feetSetting=feet,
+            id=self._device.id,
+            timespan=self._timer.timespan_seconds,
+        )
+        await self.hass.async_add_executor_job(self.coordinator.hub.quickstart, qs)
+        await self.coordinator.async_request_refresh()
 
 
 class BodyZone(_Zone):
+    """Select entity for body zone heating level."""
 
-    def __init__(self, hub, device):
-        super().__init__(hub, device, 'Body Zone')
+    def __init__(self, coordinator, device, timer) -> None:
+        super().__init__(coordinator, device, timer, "Body Zone")
+        self._attr_icon = "mdi:human"
 
-    @property
-    def current_option(self):
-        return str(self._status.bodySetting)
+    def _get_setting(self) -> int:
+        return self.coordinator.data.bodySetting
 
-    def select_option(self, option: str) -> None:
-        self.update()
-        qs = beurer_cosynight.Quickstart(bodySetting=int(option),
-                                         feetSetting=self._status.feetSetting,
-                                         id=self._status.id,
-                                         timespan=3600)
-        self._hub.quickstart(qs)
+    async def async_select_option(self, option: str) -> None:
+        data = self.coordinator.data
+        feet = data.feetSetting if data else 0
+        await self._async_quickstart(int(option), feet)
 
 
 class FeetZone(_Zone):
+    """Select entity for feet zone heating level."""
 
-    def __init__(self, hub, device):
-        super().__init__(hub, device, 'Feet Zone')
+    def __init__(self, coordinator, device, timer) -> None:
+        super().__init__(coordinator, device, timer, "Feet Zone")
+        self._attr_icon = "mdi:foot-print"
+
+    def _get_setting(self) -> int:
+        return self.coordinator.data.feetSetting
+
+    async def async_select_option(self, option: str) -> None:
+        data = self.coordinator.data
+        body = data.bodySetting if data else 0
+        await self._async_quickstart(body, int(option))
+
+
+class TimerSelect(SelectEntity):
+    """Select entity for session duration."""
+
+    _attr_has_entity_name = True
+    _attr_options = list(TIMER_OPTIONS.keys())
+    _attr_icon = "mdi:timer-outline"
+
+    def __init__(self, device: beurer_cosynight.Device) -> None:
+        self._selected = DEFAULT_TIMER_LABEL
+        self._attr_name = "Timer"
+        self._attr_unique_id = f"beurer_cosynight_{device.id}_timer"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.id)},
+            name=device.name,
+            manufacturer="Beurer",
+            model="CosyNight",
+        )
 
     @property
-    def current_option(self):
-        return str(self._status.feetSetting)
+    def current_option(self) -> str:
+        return self._selected
 
-    def select_option(self, option: str) -> None:
-        self.update()
-        qs = beurer_cosynight.Quickstart(bodySetting=self._status.bodySetting,
-                                         feetSetting=int(option),
-                                         id=self._status.id,
-                                         timespan=3600)
-        self._hub.quickstart(qs)
+    @property
+    def timespan_seconds(self) -> int:
+        return TIMER_OPTIONS.get(self._selected, 3600)
+
+    async def async_select_option(self, option: str) -> None:
+        self._selected = option
+        self.async_write_ha_state()
