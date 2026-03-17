@@ -7,6 +7,7 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -75,14 +76,20 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
         raise NotImplementedError
 
     async def _async_quickstart(self, body: int, feet: int) -> None:
-        qs = beurer_cosynight.Quickstart(
-            bodySetting=body,
-            feetSetting=feet,
-            id=self._device.id,
-            timespan=self._timer.timespan_seconds,
-        )
-        await self.coordinator.hub.quickstart(qs)
-        await self.coordinator.async_request_refresh()
+        async with self.coordinator.quickstart_lock:
+            qs = beurer_cosynight.Quickstart(
+                bodySetting=body,
+                feetSetting=feet,
+                id=self._device.id,
+                timespan=self._timer.timespan_seconds,
+            )
+            try:
+                await self.coordinator.hub.quickstart(qs)
+            except beurer_cosynight.AuthError as err:
+                raise HomeAssistantError("Authentication failed") from err
+            except beurer_cosynight.ApiError as err:
+                raise HomeAssistantError(f"API error: {err}") from err
+            await self.coordinator.async_request_refresh()
 
 
 class BodyZone(_Zone):

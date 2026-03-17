@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from homeassistant.exceptions import HomeAssistantError
+
 from custom_components.beurer_cosynight.beurer_cosynight import (
+    ApiError,
+    AuthError,
     Device,
     Quickstart,
     Status,
@@ -49,12 +54,13 @@ def status():
 
 @pytest.fixture
 def coordinator(status):
-    """Return a mock coordinator with async hub."""
+    """Return a mock coordinator with async hub and a real quickstart_lock."""
     coord = MagicMock()
     coord.data = status
     coord.hub = MagicMock()
     coord.hub.quickstart = AsyncMock()
     coord.async_request_refresh = AsyncMock()
+    coord.quickstart_lock = asyncio.Lock()
     return coord
 
 
@@ -93,7 +99,6 @@ class TestBodyZone:
         """Options should be '0' through '9'."""
         assert body_zone.options == [str(x) for x in range(10)]
 
-    @pytest.mark.asyncio
     async def test_select_option_sends_quickstart(self, body_zone, coordinator):
         """Selecting an option should await hub.quickstart with correct body value."""
         await body_zone.async_select_option("7")
@@ -105,13 +110,27 @@ class TestBodyZone:
         assert qs.feetSetting == 5  # keeps current feet value
         assert qs.id == MOCK_DEVICE_ID
 
-    @pytest.mark.asyncio
     async def test_select_option_refreshes_coordinator(self, body_zone, coordinator):
         """Selecting an option should request coordinator refresh."""
         await body_zone.async_select_option("5")
         coordinator.async_request_refresh.assert_called_once()
 
-    @pytest.mark.asyncio
+    async def test_select_option_auth_error_raises_ha_error(
+        self, body_zone, coordinator
+    ):
+        """AuthError from API should be wrapped in HomeAssistantError."""
+        coordinator.hub.quickstart = AsyncMock(side_effect=AuthError("bad token"))
+        with pytest.raises(HomeAssistantError, match="Authentication failed"):
+            await body_zone.async_select_option("5")
+
+    async def test_select_option_api_error_raises_ha_error(
+        self, body_zone, coordinator
+    ):
+        """ApiError from API should be wrapped in HomeAssistantError."""
+        coordinator.hub.quickstart = AsyncMock(side_effect=ApiError("timeout"))
+        with pytest.raises(HomeAssistantError, match="API error"):
+            await body_zone.async_select_option("5")
+
     async def test_select_option_uses_timer_timespan(
         self, body_zone, timer, coordinator
     ):
@@ -155,7 +174,6 @@ class TestFeetZone:
         coordinator.data = None
         assert feet_zone.current_option == "0"
 
-    @pytest.mark.asyncio
     async def test_select_option_sends_quickstart(self, feet_zone, coordinator):
         """Selecting an option should await hub.quickstart with correct feet value."""
         await feet_zone.async_select_option("8")
@@ -165,13 +183,11 @@ class TestFeetZone:
         assert qs.bodySetting == 3  # keeps current body value
         assert qs.id == MOCK_DEVICE_ID
 
-    @pytest.mark.asyncio
     async def test_select_option_refreshes_coordinator(self, feet_zone, coordinator):
         """Selecting an option should request coordinator refresh."""
         await feet_zone.async_select_option("8")
         coordinator.async_request_refresh.assert_called_once()
 
-    @pytest.mark.asyncio
     async def test_select_option_no_data_uses_zero_for_body(
         self, feet_zone, coordinator
     ):
@@ -218,7 +234,6 @@ class TestTimerSelect:
         timer._selected = "unknown"
         assert timer.timespan_seconds == 3600
 
-    @pytest.mark.asyncio
     async def test_select_option_updates_state(self, timer):
         """Selecting an option should update _selected."""
         timer.async_write_ha_state = MagicMock()
@@ -237,10 +252,46 @@ class TestTimerSelect:
         assert (DOMAIN, MOCK_DEVICE_ID) in info["identifiers"]
 
 
+class TestQuickstartLockSerialization:
+    """Test that concurrent zone updates serialize via quickstart_lock."""
+
+    async def test_concurrent_body_and_feet_updates_serialize(
+        self, coordinator, device, timer
+    ):
+        """Body and feet zone updates should not overlap (lock serializes them)."""
+        execution_order: list[str] = []
+
+        async def slow_quickstart(qs: Quickstart) -> None:
+            zone = "body" if qs.bodySetting != 5 else "feet"
+            execution_order.append(f"{zone}_start")
+            await asyncio.sleep(0.01)
+            execution_order.append(f"{zone}_end")
+
+        coordinator.hub.quickstart = slow_quickstart
+
+        body = BodyZone(coordinator, device, timer)
+        body.hass = MagicMock()
+        feet = FeetZone(coordinator, device, timer)
+        feet.hass = MagicMock()
+
+        await asyncio.gather(
+            body.async_select_option("7"),
+            feet.async_select_option("8"),
+        )
+
+        # With the lock, one must complete before the other starts.
+        # Without the lock, we'd see interleaving like [start, start, end, end].
+        start_indices = [
+            i for i, v in enumerate(execution_order) if v.endswith("_start")
+        ]
+        end_indices = [i for i, v in enumerate(execution_order) if v.endswith("_end")]
+        # First operation must end before second starts.
+        assert end_indices[0] < start_indices[1]
+
+
 class TestAsyncSetupEntry:
     """Test the platform async_setup_entry."""
 
-    @pytest.mark.asyncio
     async def test_creates_entities_for_each_device(self, mock_hass, device, status):
         """Should create BodyZone, FeetZone, and TimerSelect per device."""
         coordinator = MagicMock()

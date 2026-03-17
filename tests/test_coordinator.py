@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from custom_components.beurer_cosynight.beurer_cosynight import (
     ApiError,
@@ -19,7 +20,7 @@ from custom_components.beurer_cosynight.coordinator import (
     UPDATE_INTERVAL,
 )
 
-from .conftest import MOCK_DEVICE_ID
+from .conftest import MOCK_DEVICE_ID, MOCK_DEVICE_NAME
 
 
 class TestCoordinatorWiring:
@@ -29,7 +30,6 @@ class TestCoordinatorWiring:
         """Coordinator should poll every 30 seconds."""
         assert UPDATE_INTERVAL.total_seconds() == 30
 
-    @pytest.mark.asyncio
     async def test_async_update_data_calls_get_status(self, mock_hass, mock_status):
         """_async_update_data should await hub.get_status directly."""
         hub = AsyncMock(spec=BeurerCosyNight)
@@ -45,7 +45,6 @@ class TestCoordinatorWiring:
         hub.get_status.assert_awaited_once_with(MOCK_DEVICE_ID)
         assert result == mock_status
 
-    @pytest.mark.asyncio
     async def test_auth_error_raises_config_entry_auth_failed(self, mock_hass):
         """AuthError from hub should raise ConfigEntryAuthFailed."""
         hub = AsyncMock(spec=BeurerCosyNight)
@@ -59,7 +58,6 @@ class TestCoordinatorWiring:
         with pytest.raises(ConfigEntryAuthFailed):
             await coordinator._async_update_data()
 
-    @pytest.mark.asyncio
     async def test_api_error_raises_update_failed(self, mock_hass):
         """ApiError from hub should raise UpdateFailed."""
         hub = AsyncMock(spec=BeurerCosyNight)
@@ -81,3 +79,29 @@ class TestCoordinatorWiring:
         coordinator.device_id = MOCK_DEVICE_ID
         assert coordinator.hub is hub
         assert coordinator.device_id == MOCK_DEVICE_ID
+
+
+class TestQuickstartLock:
+    """Test quickstart_lock on the coordinator.
+
+    We patch DataUpdateCoordinator.__init__ to a no-op so we can call the
+    real BeurerCosyNightCoordinator.__init__ without needing a fully
+    initialized HA runtime.
+    """
+
+    def test_quickstart_lock_is_asyncio_lock(self, mock_hass):
+        """Coordinator __init__ should create an asyncio.Lock for quickstart_lock."""
+        hub = AsyncMock(spec=BeurerCosyNight)
+        with patch.object(DataUpdateCoordinator, "__init__", return_value=None):
+            coord = BeurerCosyNightCoordinator(
+                mock_hass, hub, MOCK_DEVICE_ID, MOCK_DEVICE_NAME
+            )
+        assert isinstance(coord.quickstart_lock, asyncio.Lock)
+
+    def test_quickstart_lock_is_not_shared_between_coordinators(self, mock_hass):
+        """Each coordinator instance should have its own lock."""
+        hub = AsyncMock(spec=BeurerCosyNight)
+        with patch.object(DataUpdateCoordinator, "__init__", return_value=None):
+            coord_a = BeurerCosyNightCoordinator(mock_hass, hub, "dev-a", "A")
+            coord_b = BeurerCosyNightCoordinator(mock_hass, hub, "dev-b", "B")
+        assert coord_a.quickstart_lock is not coord_b.quickstart_lock

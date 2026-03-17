@@ -119,7 +119,6 @@ class TestDeviceTimerSensor:
 class TestAsyncSetupEntry:
     """Test the platform async_setup_entry."""
 
-    @pytest.mark.asyncio
     async def test_creates_sensor_per_device(self, mock_hass, device, coordinator):
         """Should create one DeviceTimerSensor per device."""
         mock_hass.data = {

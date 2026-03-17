@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from homeassistant.exceptions import HomeAssistantError
+
 from custom_components.beurer_cosynight.beurer_cosynight import (
+    ApiError,
+    AuthError,
     BeurerCosyNight,
     Device,
     Quickstart,
@@ -37,6 +42,7 @@ def coordinator(hub):
     coord = MagicMock(spec=BeurerCosyNightCoordinator)
     coord.hub = hub
     coord.async_request_refresh = AsyncMock()
+    coord.quickstart_lock = asyncio.Lock()
     return coord
 
 
@@ -50,7 +56,6 @@ def button(coordinator, device):
 class TestStopButton:
     """Test StopButton entity."""
 
-    @pytest.mark.asyncio
     async def test_press_sends_quickstart_with_zeros(self, button, hub):
         """Pressing stop should await hub.quickstart with body=0, feet=0, timespan=0."""
         await button.async_press()
@@ -63,11 +68,22 @@ class TestStopButton:
         assert qs.timespan == 0
         assert qs.id == MOCK_DEVICE_ID
 
-    @pytest.mark.asyncio
     async def test_press_refreshes_coordinator(self, button, coordinator):
         """Pressing stop should request a coordinator refresh."""
         await button.async_press()
         coordinator.async_request_refresh.assert_called_once()
+
+    async def test_press_auth_error_raises_ha_error(self, button, hub):
+        """AuthError from API should be wrapped in HomeAssistantError."""
+        hub.quickstart = AsyncMock(side_effect=AuthError("bad token"))
+        with pytest.raises(HomeAssistantError, match="Authentication failed"):
+            await button.async_press()
+
+    async def test_press_api_error_raises_ha_error(self, button, hub):
+        """ApiError from API should be wrapped in HomeAssistantError."""
+        hub.quickstart = AsyncMock(side_effect=ApiError("timeout"))
+        with pytest.raises(HomeAssistantError, match="API error"):
+            await button.async_press()
 
     def test_unique_id(self, button):
         assert button.unique_id == f"beurer_cosynight_{MOCK_DEVICE_ID}_stop"
@@ -89,7 +105,6 @@ class TestStopButton:
 class TestAsyncSetupEntry:
     """Test the platform async_setup_entry."""
 
-    @pytest.mark.asyncio
     async def test_creates_stop_button_per_device(self, mock_hass, device, hub):
         """Should create one StopButton per device."""
         coordinator = MagicMock(spec=BeurerCosyNightCoordinator)

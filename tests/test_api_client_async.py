@@ -8,6 +8,7 @@ import os
 
 import pytest
 
+from custom_components.beurer_cosynight.beurer_cosynight import AuthError
 from tests.conftest import FakeHttpClient
 
 # Token response as the API returns it (with dotted keys)
@@ -634,7 +635,7 @@ class TestAsyncTokenRefreshEdgeCases:
 
         client = FakeHttpClient()
         hub = BeurerCosyNight(client)
-        with pytest.raises(BeurerCosyNight.Error, match="Not authenticated"):
+        with pytest.raises(AuthError, match="Not authenticated"):
             await hub._refresh_token()
 
     async def test_no_token_with_credentials_authenticates(self, tmp_path):
@@ -679,7 +680,7 @@ class TestAsyncTokenRefreshEdgeCases:
         hub = BeurerCosyNight(client)
         hub._token = _Token(**EXPIRED_TOKEN)
 
-        with pytest.raises(BeurerCosyNight.Error):
+        with pytest.raises(AuthError):
             await hub._refresh_token()
         assert hub._token is None
 

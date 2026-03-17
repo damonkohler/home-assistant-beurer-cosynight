@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import logging
 
+import voluptuous as vol
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+)
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .beurer_cosynight import (
@@ -15,8 +22,9 @@ from .beurer_cosynight import (
     ApiError,
     AuthError,
     BeurerCosyNight,
+    Quickstart,
 )
-from .const import DOMAIN
+from .const import DEFAULT_TIMER_LABEL, DOMAIN, TIMER_OPTIONS
 from .coordinator import BeurerCosyNightCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,6 +68,72 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    async def handle_quickstart(call: ServiceCall) -> None:
+        """Handle the quickstart service call."""
+        dev_reg = dr.async_get(hass)
+        device_id = call.data["device_id"]
+        device_entry = dev_reg.async_get(device_id)
+        if device_entry is None:
+            raise HomeAssistantError(f"Device {device_id} not found")
+
+        # Find the Beurer device ID from the device registry.
+        beurer_device_id: str | None = None
+        for identifier in device_entry.identifiers:
+            if identifier[0] == DOMAIN:
+                beurer_device_id = identifier[1]
+                break
+        if beurer_device_id is None:
+            raise HomeAssistantError(
+                f"Device {device_id} is not a Beurer CosyNight device"
+            )
+
+        # Search all config entries for the coordinator.
+        coordinator = None
+        for entry_data in hass.data[DOMAIN].values():
+            coordinator = entry_data["coordinators"].get(beurer_device_id)
+            if coordinator is not None:
+                break
+        if coordinator is None:
+            raise HomeAssistantError(f"No coordinator for device {beurer_device_id}")
+
+        timer_label = call.data.get("timer", DEFAULT_TIMER_LABEL)
+        timespan = TIMER_OPTIONS.get(timer_label, TIMER_OPTIONS[DEFAULT_TIMER_LABEL])
+
+        async with coordinator.quickstart_lock:
+            qs = Quickstart(
+                bodySetting=int(call.data["body"]),
+                feetSetting=int(call.data["feet"]),
+                id=beurer_device_id,
+                timespan=timespan,
+            )
+            try:
+                await coordinator.hub.quickstart(qs)
+            except AuthError as err:
+                raise HomeAssistantError("Authentication failed") from err
+            except ApiError as err:
+                raise HomeAssistantError(f"API error: {err}") from err
+            await coordinator.async_request_refresh()
+
+    if not hass.services.has_service(DOMAIN, "quickstart"):
+        hass.services.async_register(
+            DOMAIN,
+            "quickstart",
+            handle_quickstart,
+            schema=vol.Schema(
+                {
+                    vol.Required("device_id"): str,
+                    vol.Required("body"): vol.All(
+                        vol.Coerce(int), vol.Range(min=0, max=9)
+                    ),
+                    vol.Required("feet"): vol.All(
+                        vol.Coerce(int), vol.Range(min=0, max=9)
+                    ),
+                    vol.Optional("timer"): vol.In(TIMER_OPTIONS),
+                }
+            ),
+        )
+
     return True
 
 
@@ -67,5 +141,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id)
+        if not hass.data[DOMAIN]:
+            hass.services.async_remove(DOMAIN, "quickstart")
         return True
     return False

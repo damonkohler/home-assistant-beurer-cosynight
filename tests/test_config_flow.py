@@ -32,7 +32,6 @@ def flow(mock_hass):
 class TestConfigFlowUserStep:
     """Test the user step of the config flow."""
 
-    @pytest.mark.asyncio
     async def test_show_form_when_no_input(self, flow):
         """No user_input shows the form."""
         result = await flow.async_step_user(user_input=None)
@@ -41,7 +40,6 @@ class TestConfigFlowUserStep:
         assert result["step_id"] == "user"
         assert result["errors"] == {}
 
-    @pytest.mark.asyncio
     async def test_successful_auth_creates_entry(self, flow):
         """Successful authentication creates a config entry."""
         with patch(
@@ -66,7 +64,6 @@ class TestConfigFlowUserStep:
             "password": "pass123",
         }
 
-    @pytest.mark.asyncio
     async def test_auth_error_shows_invalid_auth(self, flow):
         """AuthError should map to invalid_auth error."""
         with patch(
@@ -82,7 +79,6 @@ class TestConfigFlowUserStep:
         assert result["type"] == "form"
         assert result["errors"] == {"base": "invalid_auth"}
 
-    @pytest.mark.asyncio
     async def test_api_error_shows_cannot_connect(self, flow):
         """ApiError should map to cannot_connect error."""
         with patch(
@@ -98,7 +94,6 @@ class TestConfigFlowUserStep:
         assert result["type"] == "form"
         assert result["errors"] == {"base": "cannot_connect"}
 
-    @pytest.mark.asyncio
     async def test_unexpected_exception_maps_to_cannot_connect(self, flow):
         """Unexpected exceptions should show cannot_connect."""
         with patch(
@@ -114,7 +109,6 @@ class TestConfigFlowUserStep:
         assert result["type"] == "form"
         assert result["errors"] == {"base": "cannot_connect"}
 
-    @pytest.mark.asyncio
     async def test_authenticate_awaited_directly(self, flow):
         """Config flow should await authenticate directly, not via executor."""
         with patch(

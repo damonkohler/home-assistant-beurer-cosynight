@@ -1,0 +1,46 @@
+quickstart:
+  name: Quickstart
+  description: >-
+    Start heating with explicit body and feet zone levels in a single API call.
+    Avoids race conditions when setting both zones simultaneously.
+  fields:
+    device_id:
+      name: Device
+      description: The Beurer CosyNight device to control.
+      required: true
+      selector:
+        device:
+          integration: beurer_cosynight
+    body:
+      name: Body Zone Level
+      description: Heating level for the body zone (0-9).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 9
+          step: 1
+    feet:
+      name: Feet Zone Level
+      description: Heating level for the feet zone (0-9).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 9
+          step: 1
+    timer:
+      name: Timer
+      description: Session duration label (e.g. "1 hour"). Defaults to "1 hour" if omitted.
+      required: false
+      selector:
+        select:
+          options:
+            - "30 min"
+            - "1 hour"
+            - "1.5 hours"
+            - "2 hours"
+            - "2.5 hours"
+            - "3 hours"
+            - "3.5 hours"
+            - "4 hours"

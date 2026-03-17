@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -34,6 +35,7 @@ class BeurerCosyNightCoordinator(DataUpdateCoordinator[Status]):
         )
         self.hub = hub
         self.device_id = device_id
+        self.quickstart_lock = asyncio.Lock()
 
     async def _async_update_data(self) -> Status:
         """Fetch device status from API."""

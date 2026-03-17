@@ -117,9 +117,7 @@ class AiohttpClient:
             raise ApiError(str(err)) from err
 
     async def close(self) -> None:
-        # Do NOT close the session — it's HA's shared session via
-        # async_get_clientsession(hass). HA manages its lifecycle.
-        pass
+        """No-op — HA's shared session is managed by async_get_clientsession."""
 
 
 # ---------------------------------------------------------------------------
@@ -173,11 +171,6 @@ class _Token:
 
 
 class BeurerCosyNight:
-    class Error(Exception):
-        """Legacy error type — kept for backward compatibility."""
-
-        pass
-
     def __init__(
         self,
         client: HttpClient,
@@ -244,7 +237,7 @@ class BeurerCosyNight:
                         self._username, self._password
                     )
                     return
-                raise self.Error("Not authenticated and no credentials stored")
+                raise AuthError("Not authenticated and no credentials stored")
 
             _LOGGER.debug("Token expired, refreshing")
             try:
@@ -266,7 +259,7 @@ class BeurerCosyNight:
                         self._username, self._password
                     )
                 else:
-                    raise self.Error(
+                    raise AuthError(
                         "Token refresh failed and no credentials stored"
                     ) from err
 

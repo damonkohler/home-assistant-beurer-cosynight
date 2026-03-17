@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -51,11 +52,17 @@ class StopButton(CoordinatorEntity[BeurerCosyNightCoordinator], ButtonEntity):
 
     async def async_press(self) -> None:
         """Stop the heating session by setting both zones to 0."""
-        qs = beurer_cosynight.Quickstart(
-            bodySetting=0,
-            feetSetting=0,
-            id=self._device.id,
-            timespan=0,
-        )
-        await self.coordinator.hub.quickstart(qs)
-        await self.coordinator.async_request_refresh()
+        async with self.coordinator.quickstart_lock:
+            qs = beurer_cosynight.Quickstart(
+                bodySetting=0,
+                feetSetting=0,
+                id=self._device.id,
+                timespan=0,
+            )
+            try:
+                await self.coordinator.hub.quickstart(qs)
+            except beurer_cosynight.AuthError as err:
+                raise HomeAssistantError("Authentication failed") from err
+            except beurer_cosynight.ApiError as err:
+                raise HomeAssistantError(f"API error: {err}") from err
+            await self.coordinator.async_request_refresh()

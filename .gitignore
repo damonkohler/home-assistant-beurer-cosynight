@@ -3,6 +3,7 @@
 
 # Allow repo structure
 !.gitignore
+!.pre-commit-config.yaml
 !LICENSE
 !README.md
 !hacs.json
@@ -12,6 +13,7 @@
 !custom_components/beurer_cosynight/
 !custom_components/beurer_cosynight/*.py
 !custom_components/beurer_cosynight/*.json
+!custom_components/beurer_cosynight/*.yaml
 
 # Allow test infrastructure
 !tests/
