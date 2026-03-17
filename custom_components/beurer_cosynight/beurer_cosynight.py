@@ -54,8 +54,8 @@ class HttpClient(Protocol):
         self,
         url: str,
         *,
-        data: dict | None = None,
-        json: dict | None = None,
+        data: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]: ...

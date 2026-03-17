@@ -95,7 +95,12 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
 class BodyZone(_Zone):
     """Select entity for body zone heating level."""
 
-    def __init__(self, coordinator, device, timer) -> None:
+    def __init__(
+        self,
+        coordinator: BeurerCosyNightCoordinator,
+        device: beurer_cosynight.Device,
+        timer: TimerSelect,
+    ) -> None:
         super().__init__(coordinator, device, timer, "Body Zone")
         self._attr_icon = "mdi:human"
 
@@ -111,7 +116,12 @@ class BodyZone(_Zone):
 class FeetZone(_Zone):
     """Select entity for feet zone heating level."""
 
-    def __init__(self, coordinator, device, timer) -> None:
+    def __init__(
+        self,
+        coordinator: BeurerCosyNightCoordinator,
+        device: beurer_cosynight.Device,
+        timer: TimerSelect,
+    ) -> None:
         super().__init__(coordinator, device, timer, "Feet Zone")
         self._attr_icon = "mdi:foot-print"
 
