@@ -15,6 +15,7 @@ from homeassistant.exceptions import (
 
 from custom_components.beurer_cosynight import (
     PLATFORMS,
+    QUICKSTART_SCHEMA,
     async_setup_entry,
     async_unload_entry,
 )
@@ -514,15 +515,8 @@ class TestQuickstartServiceSchema:
 
     @pytest.fixture
     def schema(self):
-        """Return the quickstart schema from the service registration."""
-        return vol.Schema(
-            {
-                vol.Required("device_id"): str,
-                vol.Required("body"): vol.All(vol.Coerce(int), vol.Range(min=0, max=9)),
-                vol.Required("feet"): vol.All(vol.Coerce(int), vol.Range(min=0, max=9)),
-                vol.Optional("timer"): vol.In(TIMER_OPTIONS),
-            }
-        )
+        """Return the actual quickstart schema from the module."""
+        return QUICKSTART_SCHEMA
 
     def test_valid_minimal_input(self, schema):
         """Minimum required fields should validate."""

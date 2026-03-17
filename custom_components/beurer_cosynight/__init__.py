@@ -31,6 +31,15 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SELECT, Platform.SENSOR, Platform.BUTTON]
 
+QUICKSTART_SCHEMA = vol.Schema(
+    {
+        vol.Required("device_id"): str,
+        vol.Required("body"): vol.All(vol.Coerce(int), vol.Range(min=0, max=9)),
+        vol.Required("feet"): vol.All(vol.Coerce(int), vol.Range(min=0, max=9)),
+        vol.Optional("timer"): vol.In(TIMER_OPTIONS),
+    }
+)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Beurer CosyNight from a config entry."""
@@ -120,18 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             DOMAIN,
             "quickstart",
             handle_quickstart,
-            schema=vol.Schema(
-                {
-                    vol.Required("device_id"): str,
-                    vol.Required("body"): vol.All(
-                        vol.Coerce(int), vol.Range(min=0, max=9)
-                    ),
-                    vol.Required("feet"): vol.All(
-                        vol.Coerce(int), vol.Range(min=0, max=9)
-                    ),
-                    vol.Optional("timer"): vol.In(TIMER_OPTIONS),
-                }
-            ),
+            schema=QUICKSTART_SCHEMA,
         )
 
     return True
