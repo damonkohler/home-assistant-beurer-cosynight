@@ -261,11 +261,15 @@ class TestQuickstartLockSerialization:
         """Body and feet zone updates should not overlap (lock serializes them)."""
         execution_order: list[str] = []
 
+        call_count = 0
+
         async def slow_quickstart(qs: Quickstart) -> None:
-            zone = "body" if qs.bodySetting != 5 else "feet"
-            execution_order.append(f"{zone}_start")
+            nonlocal call_count
+            call_count += 1
+            label = f"call{call_count}"
+            execution_order.append(f"{label}_start")
             await asyncio.sleep(0.01)
-            execution_order.append(f"{zone}_end")
+            execution_order.append(f"{label}_end")
 
         coordinator.hub.quickstart = slow_quickstart
 
