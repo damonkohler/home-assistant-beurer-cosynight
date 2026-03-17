@@ -25,6 +25,16 @@ This integration is configured through the Home Assistant UI:
 2. Search for **Beurer CosyNight**
 3. Enter your Beurer account email and password
 
+### Re-authentication
+
+If your Beurer account credentials change or expire, the integration will detect the authentication failure and prompt you to re-authenticate:
+
+1. A "Re-authenticate" notification will appear in **Settings** > **Devices & services** for the Beurer CosyNight integration
+2. Click **Re-authenticate** and enter your updated email and password
+3. The integration will validate the new credentials and resume normal operation
+
+If the new credentials belong to a different account than the original setup, the re-authentication will be aborted to prevent accidental account switching.
+
 ## Entities
 
 Each connected mattress pad creates the following entities:
