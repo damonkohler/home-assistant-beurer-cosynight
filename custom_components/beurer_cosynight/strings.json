@@ -8,14 +8,25 @@
           "username": "Email",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Beurer CosyNight",
+        "description": "The credentials for {name} have expired. Please re-enter your credentials.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect. Please check your network connection.",
-      "invalid_auth": "Invalid credentials. Please check your email and password."
+      "invalid_auth": "Invalid credentials. Please check your email and password.",
+      "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This account is already configured."
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Re-authentication successful.",
+      "unique_id_mismatch": "The credentials belong to a different account."
     }
   }
 }
