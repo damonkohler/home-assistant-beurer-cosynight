@@ -13,6 +13,9 @@ from typing import Any, Protocol, runtime_checkable
 _BASE_URL = "https://cosynight.azurewebsites.net"
 _DATETIME_FORMAT = "%a, %d %b %Y %H:%M:%S %Z"
 _REQUEST_TIMEOUT = 10
+_REFRESH_THRESHOLD = 0.8  # Refresh when 80% of token lifetime has elapsed
+_PASSWORD_AUTH_RETRIES = 2
+_PASSWORD_AUTH_BACKOFF = 2.0  # Seconds, doubles each retry
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -188,6 +191,8 @@ class BeurerCosyNight:
 
     def _load_token(self) -> None:
         """Load token from disk if it exists (sync — called via to_thread)."""
+        if self._token_path == os.devnull:
+            return
         try:
             if os.path.exists(self._token_path):
                 with open(self._token_path) as f:
@@ -223,23 +228,47 @@ class BeurerCosyNight:
         expires = expires.replace(tzinfo=datetime.timezone.utc)
         return datetime.datetime.now(datetime.timezone.utc) > expires
 
+    def _needs_refresh(self) -> bool:
+        """Check if the token should be proactively refreshed.
+
+        Returns True if the token is expired OR if more than 80% of the
+        token's lifetime has elapsed. Refreshing before expiry avoids
+        hitting the API with an already-expired token, which some OAuth
+        servers reject.
+        """
+        if self._token is None:
+            return True
+        issued = datetime.datetime.strptime(self._token.issued, _DATETIME_FORMAT)
+        issued = issued.replace(tzinfo=datetime.timezone.utc)
+        expires = datetime.datetime.strptime(self._token.expires, _DATETIME_FORMAT)
+        expires = expires.replace(tzinfo=datetime.timezone.utc)
+        lifetime = (expires - issued).total_seconds()
+        if lifetime <= 0:
+            return True
+        now = datetime.datetime.now(datetime.timezone.utc)
+        elapsed = (now - issued).total_seconds()
+        return elapsed >= lifetime * _REFRESH_THRESHOLD
+
     async def _refresh_token(self) -> None:
         """Refresh the access token with asyncio.Lock to prevent concurrent refresh."""
         async with self._refresh_lock:
             # Re-check inside lock — another coroutine may have refreshed already
-            if self._token is not None and not self._is_expired():
+            if self._token is not None and not self._needs_refresh():
                 return
 
             if self._token is None:
                 if self._username and self._password:
                     _LOGGER.debug("No token, performing full authentication")
-                    await self._authenticate_with_password(
+                    await self._authenticate_with_password_with_retry(
                         self._username, self._password
                     )
                     return
                 raise AuthError("Not authenticated and no credentials stored")
 
-            _LOGGER.debug("Token expired, refreshing")
+            _LOGGER.debug(
+                "Token needs refresh (proactive at %d%% lifetime)",
+                int(_REFRESH_THRESHOLD * 100),
+            )
             try:
                 body = await self._client.post(
                     _BASE_URL + "/token",
@@ -255,7 +284,7 @@ class BeurerCosyNight:
                 self._token = None
                 if self._username and self._password:
                     _LOGGER.info("Attempting re-authentication with stored credentials")
-                    await self._authenticate_with_password(
+                    await self._authenticate_with_password_with_retry(
                         self._username, self._password
                     )
                 else:
@@ -277,6 +306,29 @@ class BeurerCosyNight:
         )
         await self._update_token(body)
 
+    async def _authenticate_with_password_with_retry(
+        self, username: str, password: str
+    ) -> None:
+        """Authenticate with username/password, retrying with exponential backoff."""
+        last_error: Exception | None = None
+        backoff = _PASSWORD_AUTH_BACKOFF
+        for attempt in range(_PASSWORD_AUTH_RETRIES + 1):
+            try:
+                await self._authenticate_with_password(username, password)
+                return
+            except (AuthError, ApiError) as err:
+                last_error = err
+                if attempt < _PASSWORD_AUTH_RETRIES:
+                    _LOGGER.info(
+                        "Password auth attempt %d failed (%s), retrying in %.1fs",
+                        attempt + 1,
+                        err,
+                        backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff *= 2
+        raise last_error  # type: ignore[misc]
+
     async def authenticate(self, username: str, password: str) -> None:
         """Authenticate and store credentials for future re-authentication."""
         self._username = username
@@ -291,12 +343,31 @@ class BeurerCosyNight:
         """Build Authorization header from current token."""
         return {"Authorization": f"{self._token.token_type} {self._token.access_token}"}
 
-    async def get_status(self, device_id: str) -> Status:
+    async def _call_with_auth_retry(
+        self, method: str, url: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        """Call an API endpoint, retrying once on 401 (TOCTOU race protection).
+
+        If the token expired between _refresh_token() and the actual API call,
+        force a full refresh and retry the request once.
+        """
         await self._refresh_token()
-        body = await self._client.post(
+        call = getattr(self._client, method)
+        try:
+            return await call(url, headers=self._auth_headers(), **kwargs)
+        except AuthError:
+            _LOGGER.debug(
+                "API returned 401 after refresh — forcing re-auth and retrying"
+            )
+            self._token = None
+            await self._refresh_token()
+            return await call(url, headers=self._auth_headers(), **kwargs)
+
+    async def get_status(self, device_id: str) -> Status:
+        body = await self._call_with_auth_retry(
+            "post",
             _BASE_URL + "/api/v1/Device/GetStatus",
             json={"id": device_id},
-            headers=self._auth_headers(),
             timeout=_REQUEST_TIMEOUT,
         )
         body = dict(body)  # don't mutate
@@ -304,10 +375,9 @@ class BeurerCosyNight:
         return Status(**body)
 
     async def list_devices(self) -> list[Device]:
-        await self._refresh_token()
-        body = await self._client.get(
+        body = await self._call_with_auth_retry(
+            "get",
             _BASE_URL + "/api/v1/Device/List",
-            headers=self._auth_headers(),
             timeout=_REQUEST_TIMEOUT,
         )
         devices = []
@@ -318,10 +388,9 @@ class BeurerCosyNight:
         return devices
 
     async def quickstart(self, quickstart: Quickstart) -> None:
-        await self._refresh_token()
-        await self._client.post(
+        await self._call_with_auth_retry(
+            "post",
             _BASE_URL + "/api/v1/Device/Quickstart",
             json=dataclasses.asdict(quickstart),
-            headers=self._auth_headers(),
             timeout=_REQUEST_TIMEOUT,
         )

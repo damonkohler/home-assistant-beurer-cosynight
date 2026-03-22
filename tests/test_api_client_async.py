@@ -650,7 +650,9 @@ class TestAsyncTokenRefreshEdgeCases:
         assert hub._token.access_token == "test-access-token"
 
     async def test_token_cleared_when_refresh_and_reauth_both_fail(self):
-        """After refresh + re-auth failure, token must be None."""
+        """After refresh + re-auth failure (with retries), token must be None."""
+        from unittest.mock import patch
+
         from custom_components.beurer_cosynight.beurer_cosynight import (
             AuthError,
             BeurerCosyNight,
@@ -659,12 +661,16 @@ class TestAsyncTokenRefreshEdgeCases:
 
         client = FakeHttpClient()
         client.add_error(AuthError("refresh failed"))
-        client.add_error(AuthError("reauth failed"))
+        # 3 password auth attempts (initial + 2 retries)
+        client.add_error(AuthError("reauth failed 1"))
+        client.add_error(AuthError("reauth failed 2"))
+        client.add_error(AuthError("reauth failed 3"))
         hub = BeurerCosyNight(client, username="u", password="p")
         hub._token = _Token(**EXPIRED_TOKEN)
 
-        with pytest.raises(AuthError):
-            await hub._refresh_token()
+        with patch("custom_components.beurer_cosynight.beurer_cosynight.asyncio.sleep"):
+            with pytest.raises(AuthError):
+                await hub._refresh_token()
         assert hub._token is None
 
     async def test_token_cleared_when_refresh_fails_no_credentials(self):
@@ -684,8 +690,8 @@ class TestAsyncTokenRefreshEdgeCases:
             await hub._refresh_token()
         assert hub._token is None
 
-    async def test_token_at_exact_expiry_boundary_not_refreshed(self, tmp_path):
-        """Token at exact expiry time should NOT be refreshed (> not >=)."""
+    async def test_token_before_refresh_threshold_not_refreshed(self, tmp_path):
+        """Token before 80% lifetime should NOT be refreshed."""
         import datetime
         from unittest.mock import patch
 
@@ -700,6 +706,7 @@ class TestAsyncTokenRefreshEdgeCases:
             username="u",
             password="p",
         )
+        # 12-hour token: issued at 00:00, expires at 12:00
         hub._token = _Token(
             access_token="boundary-token",
             expires="Wed, 15 Jan 2025 12:00:00 GMT",
@@ -711,18 +718,63 @@ class TestAsyncTokenRefreshEdgeCases:
             user_id="user-123",
         )
 
-        exact_expiry = datetime.datetime(
-            2025, 1, 15, 12, 0, 0, tzinfo=datetime.timezone.utc
+        # At 79% of lifetime (9h 28m) — should NOT refresh
+        before_threshold = datetime.datetime(
+            2025, 1, 15, 9, 28, 0, tzinfo=datetime.timezone.utc
         )
         with patch(
             "custom_components.beurer_cosynight.beurer_cosynight.datetime"
         ) as mock_dt:
-            mock_dt.datetime.now.return_value = exact_expiry
+            mock_dt.datetime.now.return_value = before_threshold
             mock_dt.datetime.strptime = datetime.datetime.strptime
             mock_dt.timezone = datetime.timezone
             await hub._refresh_token()
 
         assert hub._token.access_token == "boundary-token"
+
+    async def test_token_after_refresh_threshold_is_refreshed(self, tmp_path):
+        """Token past 80% lifetime should be proactively refreshed."""
+        import datetime
+        from unittest.mock import patch
+
+        from custom_components.beurer_cosynight.beurer_cosynight import (
+            BeurerCosyNight,
+            _Token,
+        )
+
+        client = FakeHttpClient([TOKEN_RESPONSE])
+        hub = BeurerCosyNight(
+            client,
+            token_path=str(tmp_path / "token"),
+            username="u",
+            password="p",
+        )
+        # 12-hour token: issued at 00:00, expires at 12:00
+        hub._token = _Token(
+            access_token="old-token",
+            expires="Wed, 15 Jan 2025 12:00:00 GMT",
+            issued="Wed, 15 Jan 2025 00:00:00 GMT",
+            expires_in=43200,
+            refresh_token="old-refresh",
+            token_type="Bearer",
+            user_email="test@example.com",
+            user_id="user-123",
+        )
+
+        # At 81% of lifetime (9h 43m) — should refresh proactively
+        after_threshold = datetime.datetime(
+            2025, 1, 15, 9, 43, 0, tzinfo=datetime.timezone.utc
+        )
+        with patch(
+            "custom_components.beurer_cosynight.beurer_cosynight.datetime"
+        ) as mock_dt:
+            mock_dt.datetime.now.return_value = after_threshold
+            mock_dt.datetime.strptime = datetime.datetime.strptime
+            mock_dt.timezone = datetime.timezone
+            await hub._refresh_token()
+
+        # Token was refreshed
+        assert hub._token.access_token == "test-access-token"
 
 
 class TestAsyncGetStatusEdgeCases:
