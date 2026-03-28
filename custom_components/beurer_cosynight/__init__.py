@@ -117,12 +117,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 timespan=timespan,
             )
             try:
-                await coordinator.hub.quickstart(qs)
+                status = await coordinator.hub.quickstart(qs)
             except AuthError as err:
                 raise HomeAssistantError("Authentication failed") from err
             except ApiError as err:
                 raise HomeAssistantError(f"API error: {err}") from err
-            await coordinator.async_request_refresh()
+            coordinator.async_set_updated_data(status)
 
     if not hass.services.has_service(DOMAIN, "quickstart"):
         hass.services.async_register(

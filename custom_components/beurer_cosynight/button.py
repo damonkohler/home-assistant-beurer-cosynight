@@ -60,9 +60,9 @@ class StopButton(CoordinatorEntity[BeurerCosyNightCoordinator], ButtonEntity):
                 timespan=0,
             )
             try:
-                await self.coordinator.hub.quickstart(qs)
+                status = await self.coordinator.hub.quickstart(qs)
             except beurer_cosynight.AuthError as err:
                 raise HomeAssistantError("Authentication failed") from err
             except beurer_cosynight.ApiError as err:
                 raise HomeAssistantError(f"API error: {err}") from err
-            await self.coordinator.async_request_refresh()
+            self.coordinator.async_set_updated_data(status)

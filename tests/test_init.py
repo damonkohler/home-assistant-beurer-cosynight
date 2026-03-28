@@ -23,6 +23,7 @@ from custom_components.beurer_cosynight.beurer_cosynight import (
     ApiError,
     AuthError,
     Quickstart,
+    Status,
 )
 from custom_components.beurer_cosynight.const import (
     DEFAULT_TIMER_LABEL,
@@ -267,6 +268,7 @@ class TestQuickstartService:
         coord.hub = mock_hub_async
         coord.quickstart_lock = asyncio.Lock()
         coord.async_request_refresh = AsyncMock()
+        coord.async_set_updated_data = MagicMock()
         return coord
 
     @pytest.fixture
@@ -329,14 +331,40 @@ class TestQuickstartService:
         assert qs.id == MOCK_DEVICE_ID
         assert qs.timespan == 7200  # 2 hours
 
-    async def test_happy_path_refreshes_coordinator(
+    async def test_happy_path_updates_coordinator_from_response(
         self, quickstart_handler, coordinator
     ):
-        """After quickstart API call, coordinator should be refreshed."""
+        """After quickstart API call, coordinator should be updated from the API response."""
         call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
         await quickstart_handler(call)
 
-        coordinator.async_request_refresh.assert_awaited_once()
+        coordinator.async_set_updated_data.assert_called_once()
+        coordinator.async_request_refresh.assert_not_called()
+
+    async def test_quickstart_service_updates_coordinator_from_api_response(
+        self, quickstart_handler, mock_hub_async, coordinator
+    ):
+        """After the handle_quickstart service call, coordinator.async_set_updated_data
+        should be called with the Status returned by hub.quickstart.
+        async_request_refresh should NOT be called."""
+        returned_status = Status(
+            active=True,
+            bodySetting=5,
+            feetSetting=5,
+            heartbeat=100,
+            id=MOCK_DEVICE_ID,
+            name="Test",
+            requiresUpdate=False,
+            timer=3600,
+        )
+        mock_hub_async.quickstart = AsyncMock(return_value=returned_status)
+        coordinator.async_request_refresh.reset_mock()
+
+        call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
+        await quickstart_handler(call)
+
+        coordinator.async_set_updated_data.assert_called_once_with(returned_status)
+        coordinator.async_request_refresh.assert_not_called()
 
     async def test_default_timer_when_omitted(self, quickstart_handler, mock_hub_async):
         """Omitting timer should use DEFAULT_TIMER_LABEL (1 hour = 3600s)."""

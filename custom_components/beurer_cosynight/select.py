@@ -75,8 +75,21 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
     def _get_setting(self) -> int:
         raise NotImplementedError
 
-    async def _async_quickstart(self, body: int, feet: int) -> None:
+    async def _async_quickstart(
+        self, zone_body: int | None = None, zone_feet: int | None = None
+    ) -> None:
         async with self.coordinator.quickstart_lock:
+            data = self.coordinator.data
+            body = (
+                zone_body
+                if zone_body is not None
+                else (data.bodySetting if data else 0)
+            )
+            feet = (
+                zone_feet
+                if zone_feet is not None
+                else (data.feetSetting if data else 0)
+            )
             qs = beurer_cosynight.Quickstart(
                 bodySetting=body,
                 feetSetting=feet,
@@ -84,12 +97,12 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
                 timespan=self._timer.timespan_seconds,
             )
             try:
-                await self.coordinator.hub.quickstart(qs)
+                status = await self.coordinator.hub.quickstart(qs)
             except beurer_cosynight.AuthError as err:
                 raise HomeAssistantError("Authentication failed") from err
             except beurer_cosynight.ApiError as err:
                 raise HomeAssistantError(f"API error: {err}") from err
-            await self.coordinator.async_request_refresh()
+            self.coordinator.async_set_updated_data(status)
 
 
 class BodyZone(_Zone):
@@ -108,9 +121,7 @@ class BodyZone(_Zone):
         return self.coordinator.data.bodySetting
 
     async def async_select_option(self, option: str) -> None:
-        data = self.coordinator.data
-        feet = data.feetSetting if data else 0
-        await self._async_quickstart(int(option), feet)
+        await self._async_quickstart(zone_body=int(option))
 
 
 class FeetZone(_Zone):
@@ -129,9 +140,7 @@ class FeetZone(_Zone):
         return self.coordinator.data.feetSetting
 
     async def async_select_option(self, option: str) -> None:
-        data = self.coordinator.data
-        body = data.bodySetting if data else 0
-        await self._async_quickstart(body, int(option))
+        await self._async_quickstart(zone_feet=int(option))
 
 
 class TimerSelect(SelectEntity):

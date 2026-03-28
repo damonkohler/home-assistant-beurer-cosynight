@@ -133,5 +133,5 @@ def mock_hub_async(mock_device, mock_status) -> AsyncMock:
     hub.authenticate.return_value = None
     hub.list_devices.return_value = [mock_device]
     hub.get_status.return_value = mock_status
-    hub.quickstart.return_value = None
+    hub.quickstart.return_value = mock_status
     return hub

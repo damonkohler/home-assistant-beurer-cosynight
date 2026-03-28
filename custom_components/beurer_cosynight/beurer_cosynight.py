@@ -387,10 +387,13 @@ class BeurerCosyNight:
             devices.append(Device(**d))
         return devices
 
-    async def quickstart(self, quickstart: Quickstart) -> None:
-        await self._call_with_auth_retry(
+    async def quickstart(self, quickstart: Quickstart) -> Status:
+        body = await self._call_with_auth_retry(
             "post",
             _BASE_URL + "/api/v1/Device/Quickstart",
             json=dataclasses.asdict(quickstart),
             timeout=_REQUEST_TIMEOUT,
         )
+        body = dict(body)
+        body["requiresUpdate"] = body.pop("requieresUpdate")
+        return Status(**body)

@@ -15,6 +15,7 @@ from custom_components.beurer_cosynight.beurer_cosynight import (
     BeurerCosyNight,
     Device,
     Quickstart,
+    Status,
 )
 from custom_components.beurer_cosynight.button import StopButton, async_setup_entry
 from custom_components.beurer_cosynight.const import DOMAIN
@@ -42,6 +43,7 @@ def coordinator(hub):
     coord = MagicMock(spec=BeurerCosyNightCoordinator)
     coord.hub = hub
     coord.async_request_refresh = AsyncMock()
+    coord.async_set_updated_data = MagicMock()
     coord.quickstart_lock = asyncio.Lock()
     return coord
 
@@ -68,10 +70,35 @@ class TestStopButton:
         assert qs.timespan == 0
         assert qs.id == MOCK_DEVICE_ID
 
-    async def test_press_refreshes_coordinator(self, button, coordinator):
-        """Pressing stop should request a coordinator refresh."""
+    async def test_press_updates_coordinator_from_response(self, button, coordinator):
+        """Pressing stop should update coordinator data from the API response, not refresh."""
         await button.async_press()
-        coordinator.async_request_refresh.assert_called_once()
+        coordinator.async_set_updated_data.assert_called_once()
+        coordinator.async_request_refresh.assert_not_called()
+
+    async def test_stop_button_updates_coordinator_from_api_response(
+        self, button, hub, coordinator
+    ):
+        """After async_press, coordinator.async_set_updated_data should be called
+        with the Status returned by hub.quickstart. async_request_refresh should
+        NOT be called."""
+        returned_status = Status(
+            active=False,
+            bodySetting=0,
+            feetSetting=0,
+            heartbeat=100,
+            id=MOCK_DEVICE_ID,
+            name=MOCK_DEVICE_NAME,
+            requiresUpdate=False,
+            timer=0,
+        )
+        hub.quickstart = AsyncMock(return_value=returned_status)
+        coordinator.async_request_refresh.reset_mock()
+
+        await button.async_press()
+
+        coordinator.async_set_updated_data.assert_called_once_with(returned_status)
+        coordinator.async_request_refresh.assert_not_called()
 
     async def test_press_auth_error_raises_ha_error(self, button, hub):
         """AuthError from API should be wrapped in HomeAssistantError."""

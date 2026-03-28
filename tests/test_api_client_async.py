@@ -489,7 +489,7 @@ class TestAsyncQuickstart:
             _Token,
         )
 
-        client = FakeHttpClient([{}])
+        client = FakeHttpClient([STATUS_RESPONSE])
         hub = BeurerCosyNight(client, token_path="/dev/null")
         hub._token = _Token(**VALID_TOKEN)
         qs = Quickstart(bodySetting=3, feetSetting=5, id="d1", timespan=3600)
@@ -505,7 +505,7 @@ class TestAsyncQuickstart:
             _Token,
         )
 
-        client = FakeHttpClient([{}])
+        client = FakeHttpClient([STATUS_RESPONSE])
         hub = BeurerCosyNight(client, token_path="/dev/null")
         hub._token = _Token(**VALID_TOKEN)
         qs = Quickstart(bodySetting=3, feetSetting=5, id="device-123", timespan=3600)
@@ -528,7 +528,7 @@ class TestAsyncQuickstart:
             _Token,
         )
 
-        client = FakeHttpClient([{}])
+        client = FakeHttpClient([STATUS_RESPONSE])
         hub = BeurerCosyNight(client, token_path="/dev/null")
         hub._token = _Token(**VALID_TOKEN)
         qs = Quickstart(bodySetting=0, feetSetting=0, id="device-123", timespan=0)
@@ -845,6 +845,49 @@ class TestAsyncListDevicesEdgeCases:
         hub._token = _Token(**VALID_TOKEN)
         devices = await hub.list_devices()
         assert devices == []
+
+
+class TestAsyncQuickstartReturnsStatus:
+    """Test that quickstart() returns a Status object from the API response."""
+
+    async def test_quickstart_returns_status(self):
+        """quickstart() should return a Status object parsed from the API response."""
+        from custom_components.beurer_cosynight.beurer_cosynight import (
+            BeurerCosyNight,
+            Quickstart,
+            Status,
+            _Token,
+        )
+
+        client = FakeHttpClient([STATUS_RESPONSE])
+        hub = BeurerCosyNight(client, token_path="/dev/null")
+        hub._token = _Token(**VALID_TOKEN)
+        qs = Quickstart(bodySetting=3, feetSetting=5, id="device-123", timespan=3600)
+        result = await hub.quickstart(qs)
+
+        assert isinstance(
+            result, Status
+        ), f"quickstart() should return a Status, got {type(result)}"
+        assert result.bodySetting == 3
+        assert result.feetSetting == 5
+        assert result.id == "device-123"
+        assert result.active is True
+
+    async def test_quickstart_return_not_none(self):
+        """quickstart() must not return None — it should return the parsed Status."""
+        from custom_components.beurer_cosynight.beurer_cosynight import (
+            BeurerCosyNight,
+            Quickstart,
+            _Token,
+        )
+
+        client = FakeHttpClient([STATUS_RESPONSE])
+        hub = BeurerCosyNight(client, token_path="/dev/null")
+        hub._token = _Token(**VALID_TOKEN)
+        qs = Quickstart(bodySetting=3, feetSetting=5, id="device-123", timespan=3600)
+        result = await hub.quickstart(qs)
+
+        assert result is not None, "quickstart() should not return None"
 
 
 class TestAsyncQuickstartEdgeCases:

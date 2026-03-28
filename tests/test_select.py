@@ -60,6 +60,7 @@ def coordinator(status):
     coord.hub = MagicMock()
     coord.hub.quickstart = AsyncMock()
     coord.async_request_refresh = AsyncMock()
+    coord.async_set_updated_data = MagicMock()
     coord.quickstart_lock = asyncio.Lock()
     return coord
 
@@ -110,10 +111,70 @@ class TestBodyZone:
         assert qs.feetSetting == 5  # keeps current feet value
         assert qs.id == MOCK_DEVICE_ID
 
-    async def test_select_option_refreshes_coordinator(self, body_zone, coordinator):
-        """Selecting an option should request coordinator refresh."""
+    async def test_select_option_does_not_call_refresh(self, body_zone, coordinator):
+        """After updating state from the API response, async_request_refresh should NOT be called."""
         await body_zone.async_select_option("5")
-        coordinator.async_request_refresh.assert_called_once()
+        coordinator.async_request_refresh.assert_not_called()
+
+    async def test_select_option_updates_coordinator_from_response(
+        self, body_zone, coordinator
+    ):
+        """After async_select_option, coordinator.async_set_updated_data should be
+        called with the Status returned by hub.quickstart. async_request_refresh
+        should NOT be called."""
+        returned_status = Status(
+            active=True,
+            bodySetting=5,
+            feetSetting=5,
+            heartbeat=100,
+            id=MOCK_DEVICE_ID,
+            name=MOCK_DEVICE_NAME,
+            requiresUpdate=False,
+            timer=3600,
+        )
+        coordinator.hub.quickstart = AsyncMock(return_value=returned_status)
+
+        await body_zone.async_select_option("5")
+
+        coordinator.async_set_updated_data.assert_called_once_with(returned_status)
+        coordinator.async_request_refresh.assert_not_called()
+
+    async def test_select_option_passes_quickstart_response_to_set_updated_data(
+        self, body_zone, coordinator
+    ):
+        """hub.quickstart returns a specific Status object. Verify
+        async_set_updated_data is called with that exact object."""
+        sentinel_status = Status(
+            active=False,
+            bodySetting=7,
+            feetSetting=5,
+            heartbeat=42,
+            id=MOCK_DEVICE_ID,
+            name="Sentinel",
+            requiresUpdate=True,
+            timer=9999,
+        )
+        coordinator.hub.quickstart = AsyncMock(return_value=sentinel_status)
+
+        await body_zone.async_select_option("7")
+
+        coordinator.async_set_updated_data.assert_called_once()
+        actual = coordinator.async_set_updated_data.call_args[0][0]
+        assert actual is sentinel_status, (
+            "async_set_updated_data must receive the exact Status object "
+            "returned by hub.quickstart"
+        )
+
+    async def test_select_option_no_data_uses_zero_for_feet(
+        self, body_zone, coordinator
+    ):
+        """When coordinator data is None, feet should default to 0."""
+        coordinator.data = None
+        await body_zone.async_select_option("4")
+
+        qs = coordinator.hub.quickstart.call_args[0][0]
+        assert qs.bodySetting == 4
+        assert qs.feetSetting == 0
 
     async def test_select_option_auth_error_raises_ha_error(
         self, body_zone, coordinator
@@ -183,10 +244,33 @@ class TestFeetZone:
         assert qs.bodySetting == 3  # keeps current body value
         assert qs.id == MOCK_DEVICE_ID
 
-    async def test_select_option_refreshes_coordinator(self, feet_zone, coordinator):
-        """Selecting an option should request coordinator refresh."""
+    async def test_select_option_does_not_call_refresh(self, feet_zone, coordinator):
+        """After updating state from the API response, async_request_refresh should NOT be called."""
         await feet_zone.async_select_option("8")
-        coordinator.async_request_refresh.assert_called_once()
+        coordinator.async_request_refresh.assert_not_called()
+
+    async def test_select_option_updates_coordinator_from_response(
+        self, feet_zone, coordinator
+    ):
+        """After async_select_option, coordinator.async_set_updated_data should be
+        called with the Status returned by hub.quickstart. async_request_refresh
+        should NOT be called."""
+        returned_status = Status(
+            active=True,
+            bodySetting=3,
+            feetSetting=8,
+            heartbeat=100,
+            id=MOCK_DEVICE_ID,
+            name=MOCK_DEVICE_NAME,
+            requiresUpdate=False,
+            timer=3600,
+        )
+        coordinator.hub.quickstart = AsyncMock(return_value=returned_status)
+
+        await feet_zone.async_select_option("8")
+
+        coordinator.async_set_updated_data.assert_called_once_with(returned_status)
+        coordinator.async_request_refresh.assert_not_called()
 
     async def test_select_option_no_data_uses_zero_for_body(
         self, feet_zone, coordinator
@@ -291,6 +375,72 @@ class TestQuickstartLockSerialization:
         end_indices = [i for i, v in enumerate(execution_order) if v.endswith("_end")]
         # First operation must end before second starts.
         assert end_indices[0] < start_indices[1]
+
+    async def test_concurrent_updates_use_correct_data(
+        self, coordinator, device, timer, status
+    ):
+        """Concurrent body=7 and feet=8 must produce correct final state.
+
+        The race condition being tested: if both zones read coordinator.data
+        BEFORE acquiring the lock, the second call uses stale data and
+        clobbers the first call's value. The fix reads coordinator.data
+        INSIDE the lock and updates state from the API response so the second call
+        sees the first call's result.
+
+        After both calls complete, the last quickstart call must have
+        BOTH body=7 AND feet=8 (not body=0/feet=8 or body=7/feet=0).
+        """
+
+        def make_quickstart_side_effect(coord):
+            """Return an async function that simulates the API returning a
+            Status reflecting the Quickstart values sent, and that mutates
+            coordinator.data via async_set_updated_data."""
+
+            async def side_effect(qs):
+                # Simulate API returning full status with the new values
+                new_status = Status(
+                    active=True,
+                    bodySetting=qs.bodySetting,
+                    feetSetting=qs.feetSetting,
+                    heartbeat=100,
+                    id=qs.id,
+                    name=MOCK_DEVICE_NAME,
+                    requiresUpdate=False,
+                    timer=qs.timespan,
+                )
+                return new_status
+
+            return side_effect
+
+        def optimistic_update(new_data):
+            """Side effect for async_set_updated_data that mutates coordinator.data."""
+            coordinator.data = new_data
+
+        coordinator.hub.quickstart = AsyncMock(
+            side_effect=make_quickstart_side_effect(coordinator)
+        )
+        coordinator.async_set_updated_data = MagicMock(side_effect=optimistic_update)
+
+        body = BodyZone(coordinator, device, timer)
+        body.hass = MagicMock()
+        feet = FeetZone(coordinator, device, timer)
+        feet.hass = MagicMock()
+
+        await asyncio.gather(
+            body.async_select_option("7"),
+            feet.async_select_option("8"),
+        )
+
+        # Both calls completed. The last API call must include both values.
+        assert coordinator.hub.quickstart.call_count == 2
+        last_qs = coordinator.hub.quickstart.call_args_list[-1][0][0]
+        assert last_qs.bodySetting == 7, (
+            f"Last quickstart call should have body=7 (from first call's "
+            f"response), got body={last_qs.bodySetting}"
+        )
+        assert (
+            last_qs.feetSetting == 8
+        ), f"Last quickstart call should have feet=8, got feet={last_qs.feetSetting}"
 
 
 class TestAsyncSetupEntry:
