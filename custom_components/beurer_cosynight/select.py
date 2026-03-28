@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import logging
+from abc import abstractmethod
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import beurer_cosynight
 from .const import DEFAULT_TIMER_LABEL, DOMAIN, TIMER_OPTIONS
 from .coordinator import BeurerCosyNightCoordinator
-
-_LOGGER = logging.getLogger(__name__)
+from .helpers import device_info_for
 
 
 async def async_setup_entry(
@@ -59,12 +57,7 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
         self._attr_unique_id = (
             f"beurer_cosynight_{device.id}_{zone_type.lower().replace(' ', '_')}"
         )
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.id)},
-            name=device.name,
-            manufacturer="Beurer",
-            model="CosyNight",
-        )
+        self._attr_device_info = device_info_for(device)
 
     @property
     def current_option(self) -> str:
@@ -72,8 +65,8 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
             return "0"
         return str(self._get_setting())
 
-    def _get_setting(self) -> int:
-        raise NotImplementedError
+    @abstractmethod
+    def _get_setting(self) -> int: ...
 
     async def _async_quickstart(
         self, zone_body: int | None = None, zone_feet: int | None = None
@@ -154,12 +147,7 @@ class TimerSelect(SelectEntity):
         self._selected = DEFAULT_TIMER_LABEL
         self._attr_name = "Timer"
         self._attr_unique_id = f"beurer_cosynight_{device.id}_timer"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.id)},
-            name=device.name,
-            manufacturer="Beurer",
-            model="CosyNight",
-        )
+        self._attr_device_info = device_info_for(device)
 
     @property
     def current_option(self) -> str:

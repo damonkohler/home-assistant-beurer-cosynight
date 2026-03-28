@@ -6,13 +6,13 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTime
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import beurer_cosynight
 from .const import DOMAIN
 from .coordinator import BeurerCosyNightCoordinator
+from .helpers import device_info_for
 
 
 async def async_setup_entry(
@@ -46,12 +46,7 @@ class DeviceTimerSensor(CoordinatorEntity[BeurerCosyNightCoordinator], SensorEnt
         super().__init__(coordinator)
         self._attr_name = "Remaining Time"
         self._attr_unique_id = f"beurer_cosynight_{device.id}_remaining_time"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.id)},
-            name=device.name,
-            manufacturer="Beurer",
-            model="CosyNight",
-        )
+        self._attr_device_info = device_info_for(device)
 
     @property
     def native_value(self) -> int | None:

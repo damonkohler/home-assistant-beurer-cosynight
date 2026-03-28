@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -92,7 +93,7 @@ class FakeHttpClient:
         self,
         url: str,
         *,
-        headers: dict | None = None,
+        headers: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> dict:
         self.requests.append(("GET", url, {"headers": headers, "timeout": timeout}))
@@ -102,9 +103,9 @@ class FakeHttpClient:
         self,
         url: str,
         *,
-        data: dict | None = None,
-        json: dict | None = None,
-        headers: dict | None = None,
+        data: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> dict:
         self.requests.append(

@@ -6,13 +6,13 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import beurer_cosynight
 from .const import DOMAIN
 from .coordinator import BeurerCosyNightCoordinator
+from .helpers import device_info_for
 
 
 async def async_setup_entry(
@@ -43,12 +43,7 @@ class StopButton(CoordinatorEntity[BeurerCosyNightCoordinator], ButtonEntity):
         self._device = device
         self._attr_name = "Stop"
         self._attr_unique_id = f"beurer_cosynight_{device.id}_stop"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.id)},
-            name=device.name,
-            manufacturer="Beurer",
-            model="CosyNight",
-        )
+        self._attr_device_info = device_info_for(device)
 
     async def async_press(self) -> None:
         """Stop the heating session by setting both zones to 0."""

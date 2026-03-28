@@ -100,8 +100,8 @@ class AiohttpClient:
         self,
         url: str,
         *,
-        data: dict | None = None,
-        json: dict | None = None,
+        data: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
@@ -339,8 +339,17 @@ class BeurerCosyNight:
         else:
             await self._refresh_token()
 
+    @staticmethod
+    def _fix_update_key(body: dict[str, Any]) -> dict[str, Any]:
+        """Fix the API typo: rename 'requieresUpdate' to 'requiresUpdate'."""
+        body = dict(body)
+        body["requiresUpdate"] = body.pop("requieresUpdate")
+        return body
+
     def _auth_headers(self) -> dict[str, str]:
         """Build Authorization header from current token."""
+        if self._token is None:
+            raise AuthError("Not authenticated")
         return {"Authorization": f"{self._token.token_type} {self._token.access_token}"}
 
     async def _call_with_auth_retry(
@@ -370,9 +379,7 @@ class BeurerCosyNight:
             json={"id": device_id},
             timeout=_REQUEST_TIMEOUT,
         )
-        body = dict(body)  # don't mutate
-        body["requiresUpdate"] = body.pop("requieresUpdate")
-        return Status(**body)
+        return Status(**self._fix_update_key(body))
 
     async def list_devices(self) -> list[Device]:
         body = await self._call_with_auth_retry(
@@ -380,12 +387,7 @@ class BeurerCosyNight:
             _BASE_URL + "/api/v1/Device/List",
             timeout=_REQUEST_TIMEOUT,
         )
-        devices = []
-        for d in body.get("devices", []):
-            d = dict(d)  # don't mutate
-            d["requiresUpdate"] = d.pop("requieresUpdate")
-            devices.append(Device(**d))
-        return devices
+        return [Device(**self._fix_update_key(d)) for d in body.get("devices", [])]
 
     async def quickstart(self, quickstart: Quickstart) -> Status:
         body = await self._call_with_auth_retry(
@@ -394,6 +396,4 @@ class BeurerCosyNight:
             json=dataclasses.asdict(quickstart),
             timeout=_REQUEST_TIMEOUT,
         )
-        body = dict(body)
-        body["requiresUpdate"] = body.pop("requieresUpdate")
-        return Status(**body)
+        return Status(**self._fix_update_key(body))
