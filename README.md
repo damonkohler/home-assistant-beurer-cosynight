@@ -43,7 +43,7 @@ Each connected mattress pad creates the following entities:
 |--------|------|-------------|
 | **Body Zone** | Select (0–9) | Heating level for the body zone. `0` is off. |
 | **Feet Zone** | Select (0–9) | Heating level for the feet zone. `0` is off. |
-| **Timer** | Select | Session duration: 30 min, 1–4 hours (in 30 min increments). Defaults to 1 hour. |
+| **Timer** | Number (1–240 min) | Session duration in minutes. Defaults to 60. Input via numeric box. |
 | **Remaining Time** | Sensor (seconds) | Time remaining in the current heating session. |
 | **Stop** | Button | Immediately stops the active heating session. |
 
@@ -60,7 +60,7 @@ Start heating with explicit body and feet zone levels in a single API call. This
 | `device_id` | Yes | The HA device ID of the Beurer CosyNight device. |
 | `body` | Yes | Heating level for the body zone (0-9). |
 | `feet` | Yes | Heating level for the feet zone (0-9). |
-| `timer` | No | Session duration label (e.g. "1 hour"). Defaults to "1 hour". Options: 30 min, 1 hour, 1.5-4 hours in 30 min increments. |
+| `timer` | No | Session duration in minutes (1-240). Defaults to 60. |
 
 **Example automation:**
 
@@ -70,7 +70,7 @@ Start heating with explicit body and feet zone levels in a single API call. This
     device_id: your_device_id_here
     body: 3
     feet: 3
-    timer: "1.5 hours"
+    timer: 90
 ```
 
 **Why use quickstart instead of zone selects?** When you call `select.select_option` on the body and feet zone entities sequentially, each call sends a separate API request to the Beurer cloud. The second request can race with the first, potentially overwriting the body setting back to its prior value. The quickstart service sets both zones in a single API request, eliminating this race condition. Both methods acquire the same per-device lock to prevent interleaving with other operations.

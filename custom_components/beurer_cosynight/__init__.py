@@ -24,19 +24,34 @@ from .beurer_cosynight import (
     BeurerCosyNight,
     Quickstart,
 )
-from .const import DEFAULT_TIMER_LABEL, DOMAIN, TIMER_OPTIONS
+from .const import (
+    DOMAIN,
+    SECONDS_PER_MINUTE,
+    TIMER_DEFAULT_MINUTES,
+    TIMER_MAX_MINUTES,
+    TIMER_MIN_MINUTES,
+)
 from .coordinator import BeurerCosyNightCoordinator
+from .number import TimerNumber
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SELECT, Platform.SENSOR, Platform.BUTTON]
+PLATFORMS = [
+    Platform.SELECT,
+    Platform.SENSOR,
+    Platform.BUTTON,
+    Platform.NUMBER,
+]
 
 QUICKSTART_SCHEMA = vol.Schema(
     {
         vol.Required("device_id"): str,
         vol.Required("body"): vol.All(vol.Coerce(int), vol.Range(min=0, max=9)),
         vol.Required("feet"): vol.All(vol.Coerce(int), vol.Range(min=0, max=9)),
-        vol.Optional("timer"): vol.In(TIMER_OPTIONS),
+        vol.Optional("timer"): vol.All(
+            vol.Coerce(int),
+            vol.Range(min=TIMER_MIN_MINUTES, max=TIMER_MAX_MINUTES),
+        ),
     }
 )
 
@@ -70,10 +85,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_config_entry_first_refresh()
         coordinators[device.id] = coordinator
 
+    timers: dict[str, TimerNumber] = {}
+    for device in devices:
+        timers[device.id] = TimerNumber(device)
+
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "hub": hub,
         "devices": devices,
         "coordinators": coordinators,
+        "timers": timers,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -97,32 +117,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 f"Device {device_id} is not a Beurer CosyNight device"
             )
 
-        # Search all config entries for the coordinator.
+        # Search all config entries for the coordinator and timer.
         coordinator = None
+        timer_entity: TimerNumber | None = None
         for entry_data in hass.data[DOMAIN].values():
             coordinator = entry_data["coordinators"].get(beurer_device_id)
             if coordinator is not None:
+                timer_entity = entry_data["timers"].get(beurer_device_id)
                 break
         if coordinator is None:
             raise HomeAssistantError(f"No coordinator for device {beurer_device_id}")
 
-        timer_label = call.data.get("timer", DEFAULT_TIMER_LABEL)
-        timespan = TIMER_OPTIONS.get(timer_label, TIMER_OPTIONS[DEFAULT_TIMER_LABEL])
+        if "timer" in call.data:
+            timespan = call.data["timer"] * SECONDS_PER_MINUTE
+        elif timer_entity is not None:
+            timespan = timer_entity.timespan_seconds
+        else:
+            timespan = TIMER_DEFAULT_MINUTES * SECONDS_PER_MINUTE
 
-        async with coordinator.quickstart_lock:
-            qs = Quickstart(
-                bodySetting=int(call.data["body"]),
-                feetSetting=int(call.data["feet"]),
-                id=beurer_device_id,
-                timespan=timespan,
-            )
-            try:
-                status = await coordinator.hub.quickstart(qs)
-            except AuthError as err:
-                raise HomeAssistantError("Authentication failed") from err
-            except ApiError as err:
-                raise HomeAssistantError(f"API error: {err}") from err
-            coordinator.async_set_updated_data(status)
+        qs = Quickstart(
+            bodySetting=call.data["body"],
+            feetSetting=call.data["feet"],
+            id=beurer_device_id,
+            timespan=timespan,
+        )
+        await coordinator.execute_quickstart(qs)
 
     if not hass.services.has_service(DOMAIN, "quickstart"):
         hass.services.async_register(

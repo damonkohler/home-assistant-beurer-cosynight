@@ -23,12 +23,13 @@ from custom_components.beurer_cosynight.beurer_cosynight import (
     ApiError,
     AuthError,
     Quickstart,
-    Status,
 )
 from custom_components.beurer_cosynight.const import (
-    DEFAULT_TIMER_LABEL,
     DOMAIN,
-    TIMER_OPTIONS,
+    SECONDS_PER_MINUTE,
+    TIMER_DEFAULT_MINUTES,
+    TIMER_MAX_MINUTES,
+    TIMER_MIN_MINUTES,
 )
 
 from .conftest import (
@@ -178,6 +179,24 @@ class TestAsyncSetupEntry:
         assert call_args[0][0] == DOMAIN
         assert call_args[0][1] == "quickstart"
 
+    async def test_setup_with_no_devices_logs_warning(
+        self, mock_hass, mock_entry, mock_hub_async
+    ):
+        """Empty device list should log a warning and still succeed."""
+        mock_hub_async.list_devices.return_value = []
+
+        with (
+            patch(
+                "custom_components.beurer_cosynight.BeurerCosyNight",
+                return_value=mock_hub_async,
+            ),
+            patch("custom_components.beurer_cosynight._LOGGER") as mock_logger,
+        ):
+            result = await async_setup_entry(mock_hass, mock_entry)
+
+        assert result is True
+        mock_logger.warning.assert_called_once_with("No Beurer CosyNight devices found")
+
     async def test_setup_does_not_re_register_quickstart_service(
         self, mock_hass, mock_entry, mock_hub_async
     ):
@@ -269,17 +288,23 @@ class TestQuickstartService:
         coord.quickstart_lock = asyncio.Lock()
         coord.async_request_refresh = AsyncMock()
         coord.async_set_updated_data = MagicMock()
+        coord.execute_quickstart = AsyncMock()
         return coord
 
     @pytest.fixture
     async def quickstart_setup(
-        self, mock_hass, mock_entry, mock_hub_async, coordinator, mock_device_registry
+        self,
+        mock_hass,
+        mock_entry,
+        mock_hub_async,
+        coordinator,
+        mock_device_registry,
     ):
-        """Set up the integration and return (handler, dr_patch) for handler tests.
+        """Set up the integration and return the handler for tests.
 
-        The dr.async_get patch must remain active when the handler is called
-        (not just during setup), because the handler resolves the device
-        registry at call time via dr.async_get(hass).
+        The dr.async_get patch must remain active when the handler is
+        called (not just during setup), because the handler resolves
+        the device registry at call time via dr.async_get(hass).
         """
         mock_hass.services.has_service.return_value = False
 
@@ -316,75 +341,83 @@ class TestQuickstartService:
         call.data = kwargs
         return call
 
-    async def test_happy_path_sends_quickstart_api_call(
-        self, quickstart_handler, mock_hub_async, coordinator
+    async def test_happy_path_delegates_to_execute_quickstart(
+        self, quickstart_handler, coordinator
     ):
-        """Valid call should send quickstart with correct body/feet/timer."""
-        call = self._make_call(device_id=HA_DEVICE_ID, body=7, feet=3, timer="2 hours")
+        """Valid call should delegate to coordinator.execute_quickstart."""
+        call = self._make_call(device_id=HA_DEVICE_ID, body=7, feet=3, timer=120)
         await quickstart_handler(call)
 
-        mock_hub_async.quickstart.assert_awaited_once()
-        qs = mock_hub_async.quickstart.call_args[0][0]
+        coordinator.execute_quickstart.assert_awaited_once()
+        qs = coordinator.execute_quickstart.call_args[0][0]
         assert isinstance(qs, Quickstart)
         assert qs.bodySetting == 7
         assert qs.feetSetting == 3
         assert qs.id == MOCK_DEVICE_ID
-        assert qs.timespan == 7200  # 2 hours
+        assert qs.timespan == 7200  # 120 min * 60
 
-    async def test_happy_path_updates_coordinator_from_response(
+    async def test_happy_path_does_not_call_refresh(
         self, quickstart_handler, coordinator
     ):
-        """After quickstart API call, coordinator should be updated from the API response."""
+        """After quickstart, async_request_refresh should not be called."""
         call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
         await quickstart_handler(call)
 
-        coordinator.async_set_updated_data.assert_called_once()
         coordinator.async_request_refresh.assert_not_called()
 
-    async def test_quickstart_service_updates_coordinator_from_api_response(
-        self, quickstart_handler, mock_hub_async, coordinator
+    async def test_default_timer_reads_from_entity(
+        self, quickstart_handler, coordinator, mock_hass
     ):
-        """After the handle_quickstart service call, coordinator.async_set_updated_data
-        should be called with the Status returned by hub.quickstart.
-        async_request_refresh should NOT be called."""
-        returned_status = Status(
-            active=True,
-            bodySetting=5,
-            feetSetting=5,
-            heartbeat=100,
-            id=MOCK_DEVICE_ID,
-            name="Test",
-            requiresUpdate=False,
-            timer=3600,
-        )
-        mock_hub_async.quickstart = AsyncMock(return_value=returned_status)
-        coordinator.async_request_refresh.reset_mock()
+        """Omitting timer should read from the TimerNumber entity.
+
+        The entity defaults to TIMER_DEFAULT_MINUTES (60), so the
+        timespan should be 3600 seconds.
+        """
+        call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
+        await quickstart_handler(call)
+
+        qs = coordinator.execute_quickstart.call_args[0][0]
+        assert qs.timespan == TIMER_DEFAULT_MINUTES * SECONDS_PER_MINUTE
+
+    async def test_default_timer_reads_custom_entity_value(
+        self, quickstart_handler, coordinator, mock_hass
+    ):
+        """When timer is omitted but entity value was changed, use entity value.
+
+        Modify the TimerNumber entity in hass.data to 90 minutes, then
+        verify the service handler reads 90 * 60 = 5400.
+        """
+        # Find the timer entity stored in hass.data and change its value.
+        for entry_data in mock_hass.data[DOMAIN].values():
+            timers = entry_data.get("timers", {})
+            timer = timers.get(MOCK_DEVICE_ID)
+            if timer is not None:
+                timer._attr_native_value = 90.0
+                break
 
         call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
         await quickstart_handler(call)
 
-        coordinator.async_set_updated_data.assert_called_once_with(returned_status)
-        coordinator.async_request_refresh.assert_not_called()
+        qs = coordinator.execute_quickstart.call_args[0][0]
+        assert qs.timespan == 5400  # 90 min * 60
 
-    async def test_default_timer_when_omitted(self, quickstart_handler, mock_hub_async):
-        """Omitting timer should use DEFAULT_TIMER_LABEL (1 hour = 3600s)."""
-        call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
+    async def test_explicit_timer_overrides_entity(
+        self, quickstart_handler, coordinator, mock_hass
+    ):
+        """Explicit timer param should override the entity value."""
+        # Set entity to 90 minutes
+        for entry_data in mock_hass.data[DOMAIN].values():
+            timers = entry_data.get("timers", {})
+            timer = timers.get(MOCK_DEVICE_ID)
+            if timer is not None:
+                timer._attr_native_value = 90.0
+                break
+
+        call = self._make_call(device_id=HA_DEVICE_ID, body=1, feet=1, timer=120)
         await quickstart_handler(call)
 
-        qs = mock_hub_async.quickstart.call_args[0][0]
-        assert qs.timespan == TIMER_OPTIONS[DEFAULT_TIMER_LABEL]
-
-    async def test_each_timer_label_maps_to_correct_seconds(
-        self, quickstart_handler, mock_hub_async
-    ):
-        """Each timer label in TIMER_OPTIONS should produce the right timespan."""
-        for label, expected_seconds in TIMER_OPTIONS.items():
-            mock_hub_async.quickstart.reset_mock()
-            call = self._make_call(device_id=HA_DEVICE_ID, body=1, feet=1, timer=label)
-            await quickstart_handler(call)
-
-            qs = mock_hub_async.quickstart.call_args[0][0]
-            assert qs.timespan == expected_seconds, f"Failed for timer={label!r}"
+        qs = coordinator.execute_quickstart.call_args[0][0]
+        assert qs.timespan == 7200  # 120 min * 60, not 90 * 60
 
     async def test_device_not_found_raises(
         self, quickstart_handler, mock_device_registry
@@ -403,23 +436,31 @@ class TestQuickstartService:
         mock_device_entry.identifiers = {("other_integration", "some-id")}
         call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
 
-        with pytest.raises(HomeAssistantError, match="not a Beurer CosyNight device"):
+        with pytest.raises(
+            HomeAssistantError,
+            match="not a Beurer CosyNight device",
+        ):
             await quickstart_handler(call)
 
     async def test_no_coordinator_for_device_raises(
-        self, mock_hass, mock_entry, mock_hub_async, mock_device_registry
+        self,
+        mock_hass,
+        mock_entry,
+        mock_hub_async,
+        mock_device_registry,
     ):
-        """Device with Beurer identifier but no coordinator should raise HomeAssistantError.
+        """Device with Beurer identifier but no coordinator should raise.
 
-        This can happen if the device belongs to a different config entry than
-        the one that registered the coordinators being searched.
+        This can happen if the device belongs to a different config
+        entry than the one that registered the coordinators.
         """
         coord = AsyncMock()
         coord.hub = mock_hub_async
         coord.quickstart_lock = asyncio.Lock()
+        coord.execute_quickstart = AsyncMock()
         mock_hass.services.has_service.return_value = False
 
-        # Keep dr.async_get patched for the handler invocation (not just setup).
+        # Keep dr.async_get patched for the handler invocation.
         with (
             patch(
                 "custom_components.beurer_cosynight.BeurerCosyNight",
@@ -434,108 +475,60 @@ class TestQuickstartService:
                 return_value=mock_device_registry,
             ),
         ):
-            # The mock_hub_async returns a device with MOCK_DEVICE_ID,
-            # so coordinators maps MOCK_DEVICE_ID -> coord.
             await async_setup_entry(mock_hass, mock_entry)
 
             handler = mock_hass.services.async_register.call_args[0][2]
 
-            # Return a Beurer device with a DIFFERENT id than what was set up.
+            # Return a Beurer device with a DIFFERENT id.
             other_entry = MagicMock()
             other_entry.identifiers = {(DOMAIN, "device-xyz-999")}
             mock_device_registry.async_get.return_value = other_entry
 
             call = MagicMock()
-            call.data = {"device_id": HA_DEVICE_ID, "body": 5, "feet": 5}
+            call.data = {
+                "device_id": HA_DEVICE_ID,
+                "body": 5,
+                "feet": 5,
+            }
 
             with pytest.raises(HomeAssistantError, match="No coordinator"):
                 await handler(call)
 
-    async def test_quickstart_acquires_lock(
-        self, quickstart_handler, mock_hub_async, coordinator
-    ):
-        """Quickstart handler should hold the coordinator lock during API call."""
-        lock_was_held = False
-
-        async def check_lock(qs):
-            nonlocal lock_was_held
-            lock_was_held = coordinator.quickstart_lock.locked()
-
-        mock_hub_async.quickstart.side_effect = check_lock
-        call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
-        await quickstart_handler(call)
-
-        assert lock_was_held, "Lock should be held during hub.quickstart()"
-
-    async def test_concurrent_quickstart_calls_serialize(
-        self, quickstart_handler, mock_hub_async, coordinator
-    ):
-        """Two concurrent quickstart calls should not overlap."""
-        execution_log: list[str] = []
-
-        async def slow_quickstart(qs):
-            execution_log.append("start")
-            await asyncio.sleep(0.01)
-            execution_log.append("end")
-
-        mock_hub_async.quickstart.side_effect = slow_quickstart
-
-        call_a = self._make_call(device_id=HA_DEVICE_ID, body=3, feet=3)
-        call_b = self._make_call(device_id=HA_DEVICE_ID, body=7, feet=7)
-
-        await asyncio.gather(
-            quickstart_handler(call_a),
-            quickstart_handler(call_b),
+    async def test_auth_error_propagates(self, quickstart_handler, coordinator):
+        """AuthError from execute_quickstart should propagate."""
+        coordinator.execute_quickstart = AsyncMock(
+            side_effect=HomeAssistantError("Authentication failed")
         )
-
-        assert execution_log == ["start", "end", "start", "end"]
-
-    async def test_body_and_feet_are_passed_as_integers(
-        self, quickstart_handler, mock_hub_async
-    ):
-        """body and feet should be coerced to int in the Quickstart payload."""
-        # The voluptuous schema does Coerce(int), but the handler also
-        # does int(call.data["body"]). Verify the final value is int.
-        call = self._make_call(device_id=HA_DEVICE_ID, body="4", feet="6")
-        await quickstart_handler(call)
-
-        qs = mock_hub_async.quickstart.call_args[0][0]
-        assert isinstance(qs.bodySetting, int)
-        assert isinstance(qs.feetSetting, int)
-        assert qs.bodySetting == 4
-        assert qs.feetSetting == 6
-
-    async def test_body_zero_and_feet_zero(self, quickstart_handler, mock_hub_async):
-        """Setting both zones to 0 should still send a valid quickstart (stop)."""
-        call = self._make_call(device_id=HA_DEVICE_ID, body=0, feet=0)
-        await quickstart_handler(call)
-
-        qs = mock_hub_async.quickstart.call_args[0][0]
-        assert qs.bodySetting == 0
-        assert qs.feetSetting == 0
-
-    async def test_body_max_and_feet_max(self, quickstart_handler, mock_hub_async):
-        """Maximum zone values (9) should be accepted."""
-        call = self._make_call(device_id=HA_DEVICE_ID, body=9, feet=9)
-        await quickstart_handler(call)
-
-        qs = mock_hub_async.quickstart.call_args[0][0]
-        assert qs.bodySetting == 9
-        assert qs.feetSetting == 9
-
-    async def test_auth_error_raises_ha_error(self, quickstart_handler, mock_hub_async):
-        """AuthError from API should be wrapped in HomeAssistantError."""
-        mock_hub_async.quickstart = AsyncMock(side_effect=AuthError("bad token"))
         call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
         with pytest.raises(HomeAssistantError, match="Authentication failed"):
             await quickstart_handler(call)
 
-    async def test_api_error_raises_ha_error(self, quickstart_handler, mock_hub_async):
-        """ApiError from API should be wrapped in HomeAssistantError."""
-        mock_hub_async.quickstart = AsyncMock(side_effect=ApiError("timeout"))
+    async def test_api_error_propagates(self, quickstart_handler, coordinator):
+        """ApiError from execute_quickstart should propagate."""
+        coordinator.execute_quickstart = AsyncMock(
+            side_effect=HomeAssistantError("API error: timeout")
+        )
         call = self._make_call(device_id=HA_DEVICE_ID, body=5, feet=5)
         with pytest.raises(HomeAssistantError, match="API error"):
             await quickstart_handler(call)
+
+    async def test_body_zero_and_feet_zero(self, quickstart_handler, coordinator):
+        """Setting both zones to 0 should still send a valid quickstart."""
+        call = self._make_call(device_id=HA_DEVICE_ID, body=0, feet=0)
+        await quickstart_handler(call)
+
+        qs = coordinator.execute_quickstart.call_args[0][0]
+        assert qs.bodySetting == 0
+        assert qs.feetSetting == 0
+
+    async def test_body_max_and_feet_max(self, quickstart_handler, coordinator):
+        """Maximum zone values (9) should be accepted."""
+        call = self._make_call(device_id=HA_DEVICE_ID, body=9, feet=9)
+        await quickstart_handler(call)
+
+        qs = coordinator.execute_quickstart.call_args[0][0]
+        assert qs.bodySetting == 9
+        assert qs.feetSetting == 9
 
 
 class TestQuickstartServiceSchema:
@@ -554,11 +547,16 @@ class TestQuickstartServiceSchema:
         assert result["feet"] == 3
 
     def test_valid_with_timer(self, schema):
-        """Timer field should accept known labels."""
+        """Timer field should accept integer minutes within range."""
         result = schema(
-            {"device_id": "dev-1", "body": 5, "feet": 3, "timer": "2 hours"}
+            {
+                "device_id": "dev-1",
+                "body": 5,
+                "feet": 3,
+                "timer": 120,
+            }
         )
-        assert result["timer"] == "2 hours"
+        assert result["timer"] == 120
 
     def test_body_coerced_from_string(self, schema):
         """String body value should be coerced to int."""
@@ -585,10 +583,53 @@ class TestQuickstartServiceSchema:
         with pytest.raises(vol.Invalid):
             schema({"device_id": "dev-1", "body": 3, "feet": 10})
 
-    def test_invalid_timer_rejects(self, schema):
-        """Unknown timer label should be rejected."""
+    def test_invalid_timer_zero_rejects(self, schema):
+        """Timer value 0 (below minimum 1) should be rejected."""
         with pytest.raises(vol.Invalid):
-            schema({"device_id": "dev-1", "body": 3, "feet": 3, "timer": "5 hours"})
+            schema(
+                {
+                    "device_id": "dev-1",
+                    "body": 3,
+                    "feet": 3,
+                    "timer": 0,
+                }
+            )
+
+    def test_invalid_timer_above_max_rejects(self, schema):
+        """Timer value 241 (above maximum 240) should be rejected."""
+        with pytest.raises(vol.Invalid):
+            schema(
+                {
+                    "device_id": "dev-1",
+                    "body": 3,
+                    "feet": 3,
+                    "timer": 241,
+                }
+            )
+
+    def test_invalid_timer_negative_rejects(self, schema):
+        """Negative timer value should be rejected."""
+        with pytest.raises(vol.Invalid):
+            schema(
+                {
+                    "device_id": "dev-1",
+                    "body": 3,
+                    "feet": 3,
+                    "timer": -1,
+                }
+            )
+
+    def test_invalid_timer_string_rejects(self, schema):
+        """String timer value (old format) should be rejected."""
+        with pytest.raises(vol.Invalid):
+            schema(
+                {
+                    "device_id": "dev-1",
+                    "body": 3,
+                    "feet": 3,
+                    "timer": "1 hour",
+                }
+            )
 
     def test_missing_device_id_rejects(self, schema):
         """Missing device_id should be rejected."""
@@ -605,23 +646,64 @@ class TestQuickstartServiceSchema:
         with pytest.raises(vol.Invalid):
             schema({"device_id": "dev-1", "body": 3})
 
-    def test_all_timer_options_accepted(self, schema):
-        """Every key in TIMER_OPTIONS should be a valid timer value."""
-        for label in TIMER_OPTIONS:
-            result = schema(
-                {"device_id": "dev-1", "body": 1, "feet": 1, "timer": label}
-            )
-            assert result["timer"] == label
+    def test_timer_min_boundary_accepted(self, schema):
+        """Minimum timer value (1 minute) should be accepted."""
+        result = schema(
+            {
+                "device_id": "dev-1",
+                "body": 1,
+                "feet": 1,
+                "timer": TIMER_MIN_MINUTES,
+            }
+        )
+        assert result["timer"] == TIMER_MIN_MINUTES
+
+    def test_timer_default_accepted(self, schema):
+        """Default timer value (60 minutes) should be accepted."""
+        result = schema(
+            {
+                "device_id": "dev-1",
+                "body": 1,
+                "feet": 1,
+                "timer": TIMER_DEFAULT_MINUTES,
+            }
+        )
+        assert result["timer"] == TIMER_DEFAULT_MINUTES
+
+    def test_timer_max_boundary_accepted(self, schema):
+        """Maximum timer value (240 minutes) should be accepted."""
+        result = schema(
+            {
+                "device_id": "dev-1",
+                "body": 1,
+                "feet": 1,
+                "timer": TIMER_MAX_MINUTES,
+            }
+        )
+        assert result["timer"] == TIMER_MAX_MINUTES
+
+    def test_timer_coerced_from_string(self, schema):
+        """String timer value that represents a valid int should be coerced."""
+        result = schema(
+            {
+                "device_id": "dev-1",
+                "body": 1,
+                "feet": 1,
+                "timer": "120",
+            }
+        )
+        assert result["timer"] == 120
 
 
 class TestPlatforms:
     """Test platform configuration."""
 
-    def test_platforms_include_select_sensor_button(self):
-        """Integration should forward to select, sensor, and button platforms."""
+    def test_platforms_include_select_sensor_button_number(self):
+        """Integration should forward to select, sensor, button, and number platforms."""
         from homeassistant.const import Platform
 
         assert Platform.SELECT in PLATFORMS
         assert Platform.SENSOR in PLATFORMS
         assert Platform.BUTTON in PLATFORMS
-        assert len(PLATFORMS) == 3
+        assert Platform.NUMBER in PLATFORMS
+        assert len(PLATFORMS) == 4

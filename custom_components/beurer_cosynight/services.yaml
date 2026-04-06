@@ -31,16 +31,11 @@ quickstart:
           step: 1
     timer:
       name: Timer
-      description: Session duration label (e.g. "1 hour"). Defaults to "1 hour" if omitted.
+      description: Session duration in minutes (1-240). Defaults to 60 if omitted.
       required: false
       selector:
-        select:
-          options:
-            - "30 min"
-            - "1 hour"
-            - "1.5 hours"
-            - "2 hours"
-            - "2.5 hours"
-            - "3 hours"
-            - "3.5 hours"
-            - "4 hours"
+        number:
+          min: 1
+          max: 240
+          step: 1
+          unit_of_measurement: min

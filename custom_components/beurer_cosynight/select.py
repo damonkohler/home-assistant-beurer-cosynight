@@ -7,14 +7,14 @@ from abc import abstractmethod
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import beurer_cosynight
-from .const import DEFAULT_TIMER_LABEL, DOMAIN, TIMER_OPTIONS
+from .const import DOMAIN
 from .coordinator import BeurerCosyNightCoordinator
 from .helpers import device_info_for
+from .number import TimerNumber
 
 
 async def async_setup_entry(
@@ -27,13 +27,14 @@ async def async_setup_entry(
     devices: list[beurer_cosynight.Device] = data["devices"]
     coordinators: dict[str, BeurerCosyNightCoordinator] = data["coordinators"]
 
+    timers: dict[str, TimerNumber] = data["timers"]
+
     entities: list[SelectEntity] = []
     for device in devices:
         coordinator = coordinators[device.id]
-        timer = TimerSelect(device)
+        timer = timers[device.id]
         entities.append(BodyZone(coordinator, device, timer))
         entities.append(FeetZone(coordinator, device, timer))
-        entities.append(timer)
     async_add_entities(entities)
 
 
@@ -47,7 +48,7 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
         self,
         coordinator: BeurerCosyNightCoordinator,
         device: beurer_cosynight.Device,
-        timer: TimerSelect,
+        timer: TimerNumber,
         zone_type: str,
     ) -> None:
         super().__init__(coordinator)
@@ -89,13 +90,7 @@ class _Zone(CoordinatorEntity[BeurerCosyNightCoordinator], SelectEntity):
                 id=self._device.id,
                 timespan=self._timer.timespan_seconds,
             )
-            try:
-                status = await self.coordinator.hub.quickstart(qs)
-            except beurer_cosynight.AuthError as err:
-                raise HomeAssistantError("Authentication failed") from err
-            except beurer_cosynight.ApiError as err:
-                raise HomeAssistantError(f"API error: {err}") from err
-            self.coordinator.async_set_updated_data(status)
+            await self.coordinator.execute_quickstart_unlocked(qs)
 
 
 class BodyZone(_Zone):
@@ -105,7 +100,7 @@ class BodyZone(_Zone):
         self,
         coordinator: BeurerCosyNightCoordinator,
         device: beurer_cosynight.Device,
-        timer: TimerSelect,
+        timer: TimerNumber,
     ) -> None:
         super().__init__(coordinator, device, timer, "Body Zone")
         self._attr_icon = "mdi:human"
@@ -124,7 +119,7 @@ class FeetZone(_Zone):
         self,
         coordinator: BeurerCosyNightCoordinator,
         device: beurer_cosynight.Device,
-        timer: TimerSelect,
+        timer: TimerNumber,
     ) -> None:
         super().__init__(coordinator, device, timer, "Feet Zone")
         self._attr_icon = "mdi:foot-print"
@@ -134,29 +129,3 @@ class FeetZone(_Zone):
 
     async def async_select_option(self, option: str) -> None:
         await self._async_quickstart(zone_feet=int(option))
-
-
-class TimerSelect(SelectEntity):
-    """Select entity for session duration."""
-
-    _attr_has_entity_name = True
-    _attr_options = list(TIMER_OPTIONS.keys())
-    _attr_icon = "mdi:timer-outline"
-
-    def __init__(self, device: beurer_cosynight.Device) -> None:
-        self._selected = DEFAULT_TIMER_LABEL
-        self._attr_name = "Timer"
-        self._attr_unique_id = f"beurer_cosynight_{device.id}_timer"
-        self._attr_device_info = device_info_for(device)
-
-    @property
-    def current_option(self) -> str:
-        return self._selected
-
-    @property
-    def timespan_seconds(self) -> int:
-        return TIMER_OPTIONS.get(self._selected, 3600)
-
-    async def async_select_option(self, option: str) -> None:
-        self._selected = option
-        self.async_write_ha_state()

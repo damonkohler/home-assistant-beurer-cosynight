@@ -10,21 +10,15 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.beurer_cosynight.beurer_cosynight import (
-    ApiError,
-    AuthError,
     Device,
     Quickstart,
     Status,
 )
-from custom_components.beurer_cosynight.const import (
-    DEFAULT_TIMER_LABEL,
-    DOMAIN,
-    TIMER_OPTIONS,
-)
+from custom_components.beurer_cosynight.const import DOMAIN
+from custom_components.beurer_cosynight.number import TimerNumber
 from custom_components.beurer_cosynight.select import (
     BodyZone,
     FeetZone,
-    TimerSelect,
     async_setup_entry,
 )
 
@@ -62,12 +56,13 @@ def coordinator(status):
     coord.async_request_refresh = AsyncMock()
     coord.async_set_updated_data = MagicMock()
     coord.quickstart_lock = asyncio.Lock()
+    coord.execute_quickstart_unlocked = AsyncMock()
     return coord
 
 
 @pytest.fixture
 def timer(device):
-    return TimerSelect(device)
+    return TimerNumber(device)
 
 
 @pytest.fixture
@@ -100,70 +95,23 @@ class TestBodyZone:
         """Options should be '0' through '9'."""
         assert body_zone.options == [str(x) for x in range(10)]
 
-    async def test_select_option_sends_quickstart(self, body_zone, coordinator):
-        """Selecting an option should await hub.quickstart with correct body value."""
+    async def test_select_option_delegates_to_execute_quickstart_unlocked(
+        self, body_zone, coordinator
+    ):
+        """Selecting an option should delegate to execute_quickstart_unlocked."""
         await body_zone.async_select_option("7")
 
-        coordinator.hub.quickstart.assert_awaited_once()
-        qs = coordinator.hub.quickstart.call_args[0][0]
+        coordinator.execute_quickstart_unlocked.assert_awaited_once()
+        qs = coordinator.execute_quickstart_unlocked.call_args[0][0]
         assert isinstance(qs, Quickstart)
         assert qs.bodySetting == 7
         assert qs.feetSetting == 5  # keeps current feet value
         assert qs.id == MOCK_DEVICE_ID
 
     async def test_select_option_does_not_call_refresh(self, body_zone, coordinator):
-        """After updating state from the API response, async_request_refresh should NOT be called."""
+        """After updating, async_request_refresh should NOT be called."""
         await body_zone.async_select_option("5")
         coordinator.async_request_refresh.assert_not_called()
-
-    async def test_select_option_updates_coordinator_from_response(
-        self, body_zone, coordinator
-    ):
-        """After async_select_option, coordinator.async_set_updated_data should be
-        called with the Status returned by hub.quickstart. async_request_refresh
-        should NOT be called."""
-        returned_status = Status(
-            active=True,
-            bodySetting=5,
-            feetSetting=5,
-            heartbeat=100,
-            id=MOCK_DEVICE_ID,
-            name=MOCK_DEVICE_NAME,
-            requiresUpdate=False,
-            timer=3600,
-        )
-        coordinator.hub.quickstart = AsyncMock(return_value=returned_status)
-
-        await body_zone.async_select_option("5")
-
-        coordinator.async_set_updated_data.assert_called_once_with(returned_status)
-        coordinator.async_request_refresh.assert_not_called()
-
-    async def test_select_option_passes_quickstart_response_to_set_updated_data(
-        self, body_zone, coordinator
-    ):
-        """hub.quickstart returns a specific Status object. Verify
-        async_set_updated_data is called with that exact object."""
-        sentinel_status = Status(
-            active=False,
-            bodySetting=7,
-            feetSetting=5,
-            heartbeat=42,
-            id=MOCK_DEVICE_ID,
-            name="Sentinel",
-            requiresUpdate=True,
-            timer=9999,
-        )
-        coordinator.hub.quickstart = AsyncMock(return_value=sentinel_status)
-
-        await body_zone.async_select_option("7")
-
-        coordinator.async_set_updated_data.assert_called_once()
-        actual = coordinator.async_set_updated_data.call_args[0][0]
-        assert actual is sentinel_status, (
-            "async_set_updated_data must receive the exact Status object "
-            "returned by hub.quickstart"
-        )
 
     async def test_select_option_no_data_uses_zero_for_feet(
         self, body_zone, coordinator
@@ -172,23 +120,27 @@ class TestBodyZone:
         coordinator.data = None
         await body_zone.async_select_option("4")
 
-        qs = coordinator.hub.quickstart.call_args[0][0]
+        qs = coordinator.execute_quickstart_unlocked.call_args[0][0]
         assert qs.bodySetting == 4
         assert qs.feetSetting == 0
 
     async def test_select_option_auth_error_raises_ha_error(
         self, body_zone, coordinator
     ):
-        """AuthError from API should be wrapped in HomeAssistantError."""
-        coordinator.hub.quickstart = AsyncMock(side_effect=AuthError("bad token"))
+        """HomeAssistantError from execute_quickstart_unlocked should propagate."""
+        coordinator.execute_quickstart_unlocked = AsyncMock(
+            side_effect=HomeAssistantError("Authentication failed")
+        )
         with pytest.raises(HomeAssistantError, match="Authentication failed"):
             await body_zone.async_select_option("5")
 
     async def test_select_option_api_error_raises_ha_error(
         self, body_zone, coordinator
     ):
-        """ApiError from API should be wrapped in HomeAssistantError."""
-        coordinator.hub.quickstart = AsyncMock(side_effect=ApiError("timeout"))
+        """HomeAssistantError from execute_quickstart_unlocked should propagate."""
+        coordinator.execute_quickstart_unlocked = AsyncMock(
+            side_effect=HomeAssistantError("API error: timeout")
+        )
         with pytest.raises(HomeAssistantError, match="API error"):
             await body_zone.async_select_option("5")
 
@@ -196,11 +148,11 @@ class TestBodyZone:
         self, body_zone, timer, coordinator
     ):
         """Quickstart should use the timer's current timespan."""
-        timer._selected = "2 hours"
+        timer._attr_native_value = 120.0  # 120 minutes
         await body_zone.async_select_option("5")
 
-        qs = coordinator.hub.quickstart.call_args[0][0]
-        assert qs.timespan == 7200  # 2 hours
+        qs = coordinator.execute_quickstart_unlocked.call_args[0][0]
+        assert qs.timespan == 7200  # 120 min * 60
 
     def test_unique_id(self, body_zone):
         """Unique ID should include device ID and zone type."""
@@ -235,41 +187,20 @@ class TestFeetZone:
         coordinator.data = None
         assert feet_zone.current_option == "0"
 
-    async def test_select_option_sends_quickstart(self, feet_zone, coordinator):
-        """Selecting an option should await hub.quickstart with correct feet value."""
+    async def test_select_option_delegates_to_execute_quickstart_unlocked(
+        self, feet_zone, coordinator
+    ):
+        """Selecting an option should delegate to execute_quickstart_unlocked."""
         await feet_zone.async_select_option("8")
 
-        qs = coordinator.hub.quickstart.call_args[0][0]
+        qs = coordinator.execute_quickstart_unlocked.call_args[0][0]
         assert qs.feetSetting == 8
         assert qs.bodySetting == 3  # keeps current body value
         assert qs.id == MOCK_DEVICE_ID
 
     async def test_select_option_does_not_call_refresh(self, feet_zone, coordinator):
-        """After updating state from the API response, async_request_refresh should NOT be called."""
+        """After updating, async_request_refresh should NOT be called."""
         await feet_zone.async_select_option("8")
-        coordinator.async_request_refresh.assert_not_called()
-
-    async def test_select_option_updates_coordinator_from_response(
-        self, feet_zone, coordinator
-    ):
-        """After async_select_option, coordinator.async_set_updated_data should be
-        called with the Status returned by hub.quickstart. async_request_refresh
-        should NOT be called."""
-        returned_status = Status(
-            active=True,
-            bodySetting=3,
-            feetSetting=8,
-            heartbeat=100,
-            id=MOCK_DEVICE_ID,
-            name=MOCK_DEVICE_NAME,
-            requiresUpdate=False,
-            timer=3600,
-        )
-        coordinator.hub.quickstart = AsyncMock(return_value=returned_status)
-
-        await feet_zone.async_select_option("8")
-
-        coordinator.async_set_updated_data.assert_called_once_with(returned_status)
         coordinator.async_request_refresh.assert_not_called()
 
     async def test_select_option_no_data_uses_zero_for_body(
@@ -279,7 +210,7 @@ class TestFeetZone:
         coordinator.data = None
         await feet_zone.async_select_option("4")
 
-        qs = coordinator.hub.quickstart.call_args[0][0]
+        qs = coordinator.execute_quickstart_unlocked.call_args[0][0]
         assert qs.bodySetting == 0
         assert qs.feetSetting == 4
 
@@ -288,52 +219,6 @@ class TestFeetZone:
 
     def test_name(self, feet_zone):
         assert feet_zone.name == "Feet Zone"
-
-
-class TestTimerSelect:
-    """Test TimerSelect entity."""
-
-    def test_default_selection(self, timer):
-        """Timer should default to DEFAULT_TIMER_LABEL."""
-        assert timer.current_option == DEFAULT_TIMER_LABEL
-
-    def test_options_match_timer_options(self, timer):
-        """Timer options should match TIMER_OPTIONS keys."""
-        assert timer.options == list(TIMER_OPTIONS.keys())
-
-    def test_timespan_seconds_default(self, timer):
-        """Default timespan should be 3600 (1 hour)."""
-        assert timer.timespan_seconds == 3600
-
-    def test_timespan_seconds_30_min(self, timer):
-        timer._selected = "30 min"
-        assert timer.timespan_seconds == 1800
-
-    def test_timespan_seconds_4_hours(self, timer):
-        timer._selected = "4 hours"
-        assert timer.timespan_seconds == 14400
-
-    def test_timespan_unknown_option_defaults_to_3600(self, timer):
-        """Unknown option should fall back to 3600."""
-        timer._selected = "unknown"
-        assert timer.timespan_seconds == 3600
-
-    async def test_select_option_updates_state(self, timer):
-        """Selecting an option should update _selected."""
-        timer.async_write_ha_state = MagicMock()
-        await timer.async_select_option("2 hours")
-        assert timer.current_option == "2 hours"
-        timer.async_write_ha_state.assert_called_once()
-
-    def test_unique_id(self, timer):
-        assert timer.unique_id == f"beurer_cosynight_{MOCK_DEVICE_ID}_timer"
-
-    def test_has_entity_name(self, timer):
-        assert timer.has_entity_name is True
-
-    def test_device_info(self, timer):
-        info = timer.device_info
-        assert (DOMAIN, MOCK_DEVICE_ID) in info["identifiers"]
 
 
 class TestQuickstartLockSerialization:
@@ -355,7 +240,7 @@ class TestQuickstartLockSerialization:
             await asyncio.sleep(0.01)
             execution_order.append(f"{label}_end")
 
-        coordinator.hub.quickstart = slow_quickstart
+        coordinator.execute_quickstart_unlocked = slow_quickstart
 
         body = BodyZone(coordinator, device, timer)
         body.hass = MagicMock()
@@ -368,7 +253,8 @@ class TestQuickstartLockSerialization:
         )
 
         # With the lock, one must complete before the other starts.
-        # Without the lock, we'd see interleaving like [start, start, end, end].
+        # Without the lock, we'd see interleaving like
+        # [start, start, end, end].
         start_indices = [
             i for i, v in enumerate(execution_order) if v.endswith("_start")
         ]
@@ -384,42 +270,30 @@ class TestQuickstartLockSerialization:
         The race condition being tested: if both zones read coordinator.data
         BEFORE acquiring the lock, the second call uses stale data and
         clobbers the first call's value. The fix reads coordinator.data
-        INSIDE the lock and updates state from the API response so the second call
-        sees the first call's result.
+        INSIDE the lock and updates state from the API response so the
+        second call sees the first call's result.
 
         After both calls complete, the last quickstart call must have
         BOTH body=7 AND feet=8 (not body=0/feet=8 or body=7/feet=0).
         """
+        quickstart_calls: list[Quickstart] = []
 
-        def make_quickstart_side_effect(coord):
-            """Return an async function that simulates the API returning a
-            Status reflecting the Quickstart values sent, and that mutates
-            coordinator.data via async_set_updated_data."""
+        async def tracking_quickstart(qs: Quickstart) -> None:
+            quickstart_calls.append(qs)
+            # Simulate the coordinator updating data from response.
+            new_status = Status(
+                active=True,
+                bodySetting=qs.bodySetting,
+                feetSetting=qs.feetSetting,
+                heartbeat=100,
+                id=qs.id,
+                name=MOCK_DEVICE_NAME,
+                requiresUpdate=False,
+                timer=qs.timespan,
+            )
+            coordinator.data = new_status
 
-            async def side_effect(qs):
-                # Simulate API returning full status with the new values
-                new_status = Status(
-                    active=True,
-                    bodySetting=qs.bodySetting,
-                    feetSetting=qs.feetSetting,
-                    heartbeat=100,
-                    id=qs.id,
-                    name=MOCK_DEVICE_NAME,
-                    requiresUpdate=False,
-                    timer=qs.timespan,
-                )
-                return new_status
-
-            return side_effect
-
-        def optimistic_update(new_data):
-            """Side effect for async_set_updated_data that mutates coordinator.data."""
-            coordinator.data = new_data
-
-        coordinator.hub.quickstart = AsyncMock(
-            side_effect=make_quickstart_side_effect(coordinator)
-        )
-        coordinator.async_set_updated_data = MagicMock(side_effect=optimistic_update)
+        coordinator.execute_quickstart_unlocked = tracking_quickstart
 
         body = BodyZone(coordinator, device, timer)
         body.hass = MagicMock()
@@ -431,12 +305,13 @@ class TestQuickstartLockSerialization:
             feet.async_select_option("8"),
         )
 
-        # Both calls completed. The last API call must include both values.
-        assert coordinator.hub.quickstart.call_count == 2
-        last_qs = coordinator.hub.quickstart.call_args_list[-1][0][0]
+        # Both calls completed. The last API call must include both
+        # values.
+        assert len(quickstart_calls) == 2
+        last_qs = quickstart_calls[-1]
         assert last_qs.bodySetting == 7, (
-            f"Last quickstart call should have body=7 (from first call's "
-            f"response), got body={last_qs.bodySetting}"
+            f"Last quickstart call should have body=7 (from first "
+            f"call's response), got body={last_qs.bodySetting}"
         )
         assert (
             last_qs.feetSetting == 8
@@ -447,15 +322,18 @@ class TestAsyncSetupEntry:
     """Test the platform async_setup_entry."""
 
     async def test_creates_entities_for_each_device(self, mock_hass, device, status):
-        """Should create BodyZone, FeetZone, and TimerSelect per device."""
+        """Should create BodyZone and FeetZone per device."""
         coordinator = MagicMock()
         coordinator.data = status
+
+        timer = TimerNumber(device)
 
         mock_hass.data = {
             DOMAIN: {
                 "entry1": {
                     "devices": [device],
                     "coordinators": {device.id: coordinator},
+                    "timers": {device.id: timer},
                 }
             }
         }
@@ -470,6 +348,6 @@ class TestAsyncSetupEntry:
 
         await async_setup_entry(mock_hass, entry, async_add_entities)
 
-        assert len(added_entities) == 3
+        assert len(added_entities) == 2
         types = {type(e).__name__ for e in added_entities}
-        assert types == {"BodyZone", "FeetZone", "TimerSelect"}
+        assert types == {"BodyZone", "FeetZone"}

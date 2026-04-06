@@ -3,6 +3,7 @@
 
 # Allow repo structure
 !.gitignore
+!.markdownlint.json
 !.pre-commit-config.yaml
 !LICENSE
 !README.md

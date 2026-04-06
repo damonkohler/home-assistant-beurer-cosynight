@@ -10,12 +10,9 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.beurer_cosynight.beurer_cosynight import (
-    ApiError,
-    AuthError,
     BeurerCosyNight,
     Device,
     Quickstart,
-    Status,
 )
 from custom_components.beurer_cosynight.button import StopButton, async_setup_entry
 from custom_components.beurer_cosynight.const import DOMAIN
@@ -45,6 +42,7 @@ def coordinator(hub):
     coord.async_request_refresh = AsyncMock()
     coord.async_set_updated_data = MagicMock()
     coord.quickstart_lock = asyncio.Lock()
+    coord.execute_quickstart = AsyncMock()
     return coord
 
 
@@ -58,57 +56,36 @@ def button(coordinator, device):
 class TestStopButton:
     """Test StopButton entity."""
 
-    async def test_press_sends_quickstart_with_zeros(self, button, hub):
-        """Pressing stop should await hub.quickstart with body=0, feet=0, timespan=0."""
+    async def test_press_delegates_to_execute_quickstart(self, button, coordinator):
+        """Pressing stop should call coordinator.execute_quickstart with zeros."""
         await button.async_press()
 
-        hub.quickstart.assert_awaited_once()
-        qs = hub.quickstart.call_args[0][0]
+        coordinator.execute_quickstart.assert_awaited_once()
+        qs = coordinator.execute_quickstart.call_args[0][0]
         assert isinstance(qs, Quickstart)
         assert qs.bodySetting == 0
         assert qs.feetSetting == 0
         assert qs.timespan == 0
         assert qs.id == MOCK_DEVICE_ID
 
-    async def test_press_updates_coordinator_from_response(self, button, coordinator):
-        """Pressing stop should update coordinator data from the API response, not refresh."""
+    async def test_press_does_not_call_refresh(self, button, coordinator):
+        """After press, async_request_refresh should not be called."""
         await button.async_press()
-        coordinator.async_set_updated_data.assert_called_once()
         coordinator.async_request_refresh.assert_not_called()
 
-    async def test_stop_button_updates_coordinator_from_api_response(
-        self, button, hub, coordinator
-    ):
-        """After async_press, coordinator.async_set_updated_data should be called
-        with the Status returned by hub.quickstart. async_request_refresh should
-        NOT be called."""
-        returned_status = Status(
-            active=False,
-            bodySetting=0,
-            feetSetting=0,
-            heartbeat=100,
-            id=MOCK_DEVICE_ID,
-            name=MOCK_DEVICE_NAME,
-            requiresUpdate=False,
-            timer=0,
+    async def test_press_auth_error_propagates(self, button, coordinator):
+        """AuthError from execute_quickstart should propagate as HomeAssistantError."""
+        coordinator.execute_quickstart = AsyncMock(
+            side_effect=HomeAssistantError("Authentication failed")
         )
-        hub.quickstart = AsyncMock(return_value=returned_status)
-        coordinator.async_request_refresh.reset_mock()
-
-        await button.async_press()
-
-        coordinator.async_set_updated_data.assert_called_once_with(returned_status)
-        coordinator.async_request_refresh.assert_not_called()
-
-    async def test_press_auth_error_raises_ha_error(self, button, hub):
-        """AuthError from API should be wrapped in HomeAssistantError."""
-        hub.quickstart = AsyncMock(side_effect=AuthError("bad token"))
         with pytest.raises(HomeAssistantError, match="Authentication failed"):
             await button.async_press()
 
-    async def test_press_api_error_raises_ha_error(self, button, hub):
-        """ApiError from API should be wrapped in HomeAssistantError."""
-        hub.quickstart = AsyncMock(side_effect=ApiError("timeout"))
+    async def test_press_api_error_propagates(self, button, coordinator):
+        """ApiError from execute_quickstart should propagate as HomeAssistantError."""
+        coordinator.execute_quickstart = AsyncMock(
+            side_effect=HomeAssistantError("API error: timeout")
+        )
         with pytest.raises(HomeAssistantError, match="API error"):
             await button.async_press()
 
