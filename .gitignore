@@ -20,5 +20,6 @@
 # Allow test infrastructure
 !tests/
 !tests/*.py
+!tests/README.md
 !requirements-dev.txt
 !pyproject.toml
